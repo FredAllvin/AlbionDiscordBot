@@ -15,6 +15,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import personal.albiondiscordbot.albion.dto.AlbionBattle;
+import personal.albiondiscordbot.config.AlbionProperties;
 import personal.albiondiscordbot.domain.DiscordGuildConfig;
 import personal.albiondiscordbot.domain.KillboardPost;
 import personal.albiondiscordbot.repository.DiscordGuildConfigRepository;
@@ -39,16 +40,19 @@ public class KillboardService {
     private final DiscordGuildConfigRepository configs;
     private final TrackedAlbionGuildRepository trackedGuilds;
     private final KillboardPostRepository posts;
+    private final AlbionProperties albionProperties;
 
     public KillboardService(
             ObjectProvider<JDA> jdaProvider,
             DiscordGuildConfigRepository configs,
             TrackedAlbionGuildRepository trackedGuilds,
-            KillboardPostRepository posts) {
+            KillboardPostRepository posts,
+            AlbionProperties albionProperties) {
         this.jdaProvider = jdaProvider;
         this.configs = configs;
         this.trackedGuilds = trackedGuilds;
         this.posts = posts;
+        this.albionProperties = albionProperties;
     }
 
     /** Called once per battle, the first time the poller stores it. */
@@ -118,7 +122,7 @@ public class KillboardService {
                 // so the opponent is the most useful thing to title this with.
                 .setTitle(
                         "%d-player battle vs %s".formatted(battle.playerCount(), opponent),
-                        "https://albionbattles.com/battles/" + battle.id())
+                        albionProperties.battleUrl(battle.id()))
                 .setColor(new Color(0xC0392B))
                 .setTimestamp(battle.startTime());
 

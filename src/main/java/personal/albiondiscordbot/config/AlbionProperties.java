@@ -11,7 +11,17 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * agents with 403.
  */
 @ConfigurationProperties(prefix = "albion")
-public record AlbionProperties(Api api, Poller poller) {
+public record AlbionProperties(Api api, Poller poller, String battleUrlTemplate) {
+
+    /**
+     * Link target for a battle in killboard posts, with {@code %d} for the battle id.
+     *
+     * <p>Configurable because killboard sites are region-scoped — the subdomain has to
+     * match the server the guild plays on, or every link 404s.
+     */
+    public String battleUrl(long albionBattleId) {
+        return battleUrlTemplate.formatted(albionBattleId);
+    }
 
     public record Api(
             String baseUrl,

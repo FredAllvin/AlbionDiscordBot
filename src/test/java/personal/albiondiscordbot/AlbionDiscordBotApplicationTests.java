@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import personal.albiondiscordbot.config.AlbionProperties;
 import personal.albiondiscordbot.discord.CommandRegistry;
 import personal.albiondiscordbot.support.PostgresTestBase;
 
@@ -26,6 +27,9 @@ class AlbionDiscordBotApplicationTests extends PostgresTestBase {
     @Autowired
     private CommandRegistry commandRegistry;
 
+    @Autowired
+    private AlbionProperties albionProperties;
+
     @Test
     @DisplayName("the application context loads and Flyway applies the schema")
     void contextLoads() {
@@ -37,5 +41,14 @@ class AlbionDiscordBotApplicationTests extends PostgresTestBase {
     void commandsAreRegistered() {
         assertThat(commandRegistry.all()).isNotEmpty();
         assertThat(commandRegistry.find("disarray")).isPresent();
+    }
+
+    @Test
+    @DisplayName("killboard links point at the configured region's battleboard")
+    void battleUrlIsRegionCorrect() {
+        // A wrong subdomain or a singular /battle/ path makes every killboard link 404,
+        // which nothing else would catch until someone clicked one.
+        assertThat(albionProperties.battleUrl(416259996L))
+                .isEqualTo("https://europe.albionbb.com/battles/416259996");
     }
 }
