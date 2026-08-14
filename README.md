@@ -301,15 +301,31 @@ docker exec albionbot-postgres pg_dump -U albionbot albionbot \
   | gzip > "albionbot-$(date +%F).sql.gz"
 ```
 
-Wire it up as a nightly cron job (`crontab -e`), keeping 14 days:
+Wire it up as a nightly cron job (`crontab -e`), keeping 14 days. Run
+`mkdir -p /root/backups` first:
 
 ```cron
-0 4 * * * cd ~/AlbionDiscordBot && docker exec albionbot-postgres pg_dump -U albionbot albionbot | gzip > ~/backups/albionbot-$(date +\%F).sql.gz && find ~/backups -name '*.sql.gz' -mtime +14 -delete
+PATH=/usr/local/bin:/usr/bin:/bin
+0 4 * * * docker exec albionbot-postgres pg_dump -U albionbot albionbot | gzip > /root/backups/albionbot-$(date +\%F).sql.gz && find /root/backups -name '*.sql.gz' -mtime +14 -delete
 ```
 
-`mkdir -p ~/backups` first, and note the `%` characters must be escaped in cron. Copy the
-files off the machine periodically — a backup that only exists on the server it protects
-is not a backup. To restore:
+Three details, each a way this silently writes nothing for months:
+
+- **Absolute paths, not `~`.** Cron's shell does not reliably expand it.
+- **The `PATH=` line.** Cron's default PATH is bare, so `docker` is often not found even
+  though it works interactively.
+- **`\%` must be escaped.** Cron reads a bare `%` as a newline and truncates the command.
+
+Confirm the next morning that a dated file actually appeared — cron fails silently.
+
+Verify a dump is real rather than an empty file (11 = 10 tables plus Flyway's own):
+
+```bash
+zcat /root/backups/albionbot-*.sql.gz | grep -c 'CREATE TABLE'   # expect 11
+```
+
+Copy the files off the machine periodically — a backup that only exists on the server it
+protects is not a backup. To restore:
 
 ```bash
 gunzip -c albionbot-2026-08-14.sql.gz | docker exec -i albionbot-postgres psql -U albionbot albionbot
