@@ -62,6 +62,12 @@ public class BattleIngestService {
                 .query(Boolean.class)
                 .single());
 
+        // Counted up front so every row for this battle carries the same figure — this
+        // is what the CTA threshold is measured against.
+        int guildPlayerCount = (int) battle.players().values().stream()
+                .filter(p -> p.guildId() != null && trackedGuildIds.contains(p.guildId()))
+                .count();
+
         for (AlbionBattle.Participant participant : battle.players().values()) {
             if (participant.guildId() == null || !trackedGuildIds.contains(participant.guildId())) {
                 continue;
@@ -71,10 +77,10 @@ public class BattleIngestService {
                             INSERT INTO battle_participation (
                                 albion_battle_id, albion_player_id, albion_player_name,
                                 albion_guild_id, albion_guild_name, kills, deaths, kill_fame,
-                                battle_start_time, battle_player_count)
+                                battle_start_time, battle_player_count, guild_player_count)
                             VALUES (:battleId, :playerId, :playerName,
                                     :guildId, :guildName, :kills, :deaths, :killFame,
-                                    :startTime, :playerCount)
+                                    :startTime, :playerCount, :guildPlayerCount)
                             ON CONFLICT (albion_battle_id, albion_player_id) DO UPDATE SET
                                 albion_player_name = EXCLUDED.albion_player_name,
                                 albion_guild_id = EXCLUDED.albion_guild_id,
@@ -82,7 +88,8 @@ public class BattleIngestService {
                                 kills = EXCLUDED.kills,
                                 deaths = EXCLUDED.deaths,
                                 kill_fame = EXCLUDED.kill_fame,
-                                battle_player_count = EXCLUDED.battle_player_count
+                                battle_player_count = EXCLUDED.battle_player_count,
+                                guild_player_count = EXCLUDED.guild_player_count
                             """)
                     .param("battleId", battle.id())
                     .param("playerId", participant.id())
@@ -94,6 +101,7 @@ public class BattleIngestService {
                     .param("killFame", participant.killFame())
                     .param("startTime", timestamp(battle.startTime()))
                     .param("playerCount", battle.playerCount())
+                    .param("guildPlayerCount", guildPlayerCount)
                     .update();
         }
 

@@ -124,6 +124,56 @@ class BattleIngestServiceTest extends PostgresTestBase {
     }
 
     @Test
+    @DisplayName("our own turnout is stored separately from the total battle size")
+    void recordsGuildTurnoutSeparately() {
+        ingestService.ingest(battle, trackedGuildIds);
+
+        Integer guildCount = jdbc.sql(
+                        "SELECT DISTINCT guild_player_count FROM battle_participation WHERE albion_battle_id = :id")
+                .param("id", battle.id())
+                .query(Integer.class)
+                .single();
+
+        long expected = battle.players().values().stream()
+                .filter(p -> p.guildId() != null && trackedGuildIds.contains(p.guildId()))
+                .count();
+
+        assertThat(guildCount).isEqualTo((int) expected);
+        // The whole point: this is smaller than the battle, because the battle includes
+        // the enemy. Comparing the CTA threshold against the total counted them too.
+        assertThat(guildCount).isLessThan(battle.playerCount());
+    }
+
+    @Test
+    @DisplayName("a small party in someone else's big fight is not a CTA")
+    void smallPartyInBigFightIsNotACta() {
+        ingestService.ingest(battle, trackedGuildIds);
+
+        int ourTurnout = jdbc.sql(
+                        "SELECT DISTINCT guild_player_count FROM battle_participation WHERE albion_battle_id = :id")
+                .param("id", battle.id())
+                .query(Integer.class)
+                .single();
+
+        // A threshold just above our turnout must exclude the battle even though the
+        // fight itself is far larger than that threshold.
+        int threshold = ourTurnout + 1;
+        assertThat(battle.playerCount()).isGreaterThan(threshold);
+
+        Long ctas = jdbc.sql(
+                        """
+                        SELECT count(*) FROM battle_participation
+                        WHERE albion_battle_id = :id AND guild_player_count >= :threshold
+                        """)
+                .param("id", battle.id())
+                .param("threshold", threshold)
+                .query(Long.class)
+                .single();
+
+        assertThat(ctas).isZero();
+    }
+
+    @Test
     @DisplayName("tracked participants are detectable for the killboard filter")
     void detectsTrackedParticipants() {
         ingestService.ingest(battle, trackedGuildIds);

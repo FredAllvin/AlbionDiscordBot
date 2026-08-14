@@ -77,7 +77,7 @@ public class StatsCommand implements SlashCommand {
         StatsService.BattleTotals battles = stats.battles();
         embed.addField(
                 "CTAs attended",
-                "**%d**\n_battles over %d players_".formatted(battles.ctas(), context.ctaMinPlayers()),
+                "**%d**\n_fights with %d+ of our own_".formatted(battles.ctas(), context.ctaMinPlayers()),
                 true);
         embed.addField("Battles tracked", Long.toString(battles.battles()), true);
         embed.addField("K / D", "%d / %d  (%s)".formatted(battles.kills(), battles.deaths(), battles.killDeathRatio()), true);

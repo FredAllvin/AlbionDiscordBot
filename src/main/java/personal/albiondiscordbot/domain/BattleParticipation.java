@@ -57,12 +57,24 @@ public class BattleParticipation {
     private Instant battleStartTime;
 
     /**
-     * Denormalised battle size. Required here specifically because the CTA threshold
-     * is configurable per Discord server, so it must be applied at query time rather
-     * than baked in at ingest.
+     * Total size of the battle, both sides. Kept for context — it is what the killboard
+     * embed reports — but it is <em>not</em> what decides whether a battle counts as a
+     * CTA.
      */
     @Column(name = "battle_player_count", nullable = false)
     private int battlePlayerCount;
+
+    /**
+     * How many tracked-guild members fought in this battle — the number the CTA
+     * threshold is compared against.
+     *
+     * <p>Denormalised rather than derived, because the threshold is configurable per
+     * Discord server and so has to be applied at query time. Measuring our own turnout
+     * rather than total battle size is what stops a small party swept up in someone
+     * else's brawl from counting as a guild call to arms.
+     */
+    @Column(name = "guild_player_count", nullable = false)
+    private int guildPlayerCount;
 
     protected BattleParticipation() {
         // for JPA
@@ -110,5 +122,9 @@ public class BattleParticipation {
 
     public int getBattlePlayerCount() {
         return battlePlayerCount;
+    }
+
+    public int getGuildPlayerCount() {
+        return guildPlayerCount;
     }
 }

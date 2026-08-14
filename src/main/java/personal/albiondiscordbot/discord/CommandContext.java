@@ -23,6 +23,6 @@ public record CommandContext(Guild guild, Member member, DiscordGuildConfig conf
     }
 
     public int ctaMinPlayers() {
-        return config != null ? config.getCtaMinPlayers() : 30;
+        return config != null ? config.getCtaMinPlayers() : 10;
     }
 }

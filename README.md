@@ -172,6 +172,15 @@ is in a tracked guild. It cannot confirm the Discord user owns it. Impersonation
 handled after the fact with `/unregister`; `registered_by` and `forced` are recorded for
 audit.
 
+**A CTA is measured by your own turnout, not the size of the fight.** The threshold
+(default **10**, set with `/setup cta_min_players`) counts how many of *your* guild
+fought, not total players. Measuring the whole battle counted the enemy too, so a 3-man
+gank squad swept into someone else's 40-player brawl registered as a CTA while a 15-man
+guild op against a small group did not.
+
+The same number drives killboard posts and `/stats` attendance, so the two always agree
+on what counts.
+
 **CTA attendance is a lower bound.** The Albion API only lists players who scored a
 kill, died, or earned assist fame in a battle. Someone who showed up and contributed
 nothing does not appear.
@@ -336,7 +345,7 @@ gunzip -c albionbot-2026-08-14.sql.gz | docker exec -i albionbot-postgres psql -
 ## Development
 
 ```bash
-./mvnw test          # 111 tests; integration tests start Postgres via Testcontainers
+./mvnw test          # 128 tests; integration tests start Postgres via Testcontainers
 ./mvnw -q compile
 ```
 

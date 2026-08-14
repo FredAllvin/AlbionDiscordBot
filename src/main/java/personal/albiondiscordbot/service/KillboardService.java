@@ -66,7 +66,12 @@ public class KillboardService {
             if (config == null || config.getKillboardChannelId() == null) {
                 continue;
             }
-            if (battle.playerCount() <= config.getCtaMinPlayers()) {
+
+            Set<String> ourGuildIds = ourGuildIds(discordGuildId);
+            // Measured against our own turnout, not the total size of the fight. A
+            // handful of us caught in someone else's 40-player brawl is not a CTA, and
+            // a 15-man guild op against a small group is.
+            if (ourPlayerCount(battle, ourGuildIds) < config.getCtaMinPlayers()) {
                 continue;
             }
             KillboardPost.Key key = new KillboardPost.Key(discordGuildId, battle.id());
@@ -77,11 +82,24 @@ public class KillboardService {
             // Record the post before sending. Discord could succeed while the reply is
             // lost, and a duplicate embed is worse than a missing message id.
             posts.save(new KillboardPost(discordGuildId, battle.id(), null));
-            send(config, battle);
+            send(config, battle, ourGuildIds);
         }
     }
 
-    private void send(DiscordGuildConfig config, AlbionBattle battle) {
+    /** How many tracked-guild members fought in this battle. */
+    static long ourPlayerCount(AlbionBattle battle, Set<String> ourGuildIds) {
+        return battle.players().values().stream()
+                .filter(p -> p.guildId() != null && ourGuildIds.contains(p.guildId()))
+                .count();
+    }
+
+    private Set<String> ourGuildIds(long discordGuildId) {
+        return trackedGuilds.findByDiscordGuildId(discordGuildId).stream()
+                .map(personal.albiondiscordbot.domain.TrackedAlbionGuild::getAlbionGuildId)
+                .collect(Collectors.toSet());
+    }
+
+    private void send(DiscordGuildConfig config, AlbionBattle battle, Set<String> ourGuildIds) {
         JDA jda = jdaProvider.getIfAvailable();
         if (jda == null) {
             return;
@@ -94,10 +112,6 @@ public class KillboardService {
                     config.getDiscordGuildId());
             return;
         }
-
-        Set<String> ourGuildIds = trackedGuilds.findByDiscordGuildId(config.getDiscordGuildId()).stream()
-                .map(personal.albiondiscordbot.domain.TrackedAlbionGuild::getAlbionGuildId)
-                .collect(Collectors.toSet());
 
         try {
             channel.sendMessageEmbeds(buildEmbed(battle, ourGuildIds)).queue();

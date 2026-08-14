@@ -31,7 +31,7 @@ public class DiscordGuildConfig {
     private Long killboardChannelId;
 
     @Column(name = "cta_min_players", nullable = false)
-    private int ctaMinPlayers = 30;
+    private int ctaMinPlayers = 10;
 
     @Column(name = "setup_completed", nullable = false)
     private boolean setupCompleted;

@@ -84,7 +84,7 @@ public class SetupCommand implements SlashCommand {
                         new OptionData(
                                         OptionType.INTEGER,
                                         "cta_min_players",
-                                        "Battle size that counts as a CTA (default 30)",
+                                        "How many of YOUR guild must fight for it to count as a CTA (default 10)",
                                         false)
                                 .setMinValue(2)
                                 .setMaxValue(500));
@@ -129,7 +129,7 @@ public class SetupCommand implements SlashCommand {
                 .addField("Verified role", mentionRole(config.getVerifiedRoleId()), true)
                 .addField("Log channel", mentionChannel(config.getLogChannelId()), true)
                 .addField("Killboard channel", mentionChannel(config.getKillboardChannelId()), true)
-                .addField("CTA threshold", "more than %d players".formatted(config.getCtaMinPlayers()), true);
+                .addField("CTA threshold", "%d+ of our own in a fight".formatted(config.getCtaMinPlayers()), true);
 
         StringBuilder next = new StringBuilder();
         if (config.getStaffRoleId() == null) {

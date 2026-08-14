@@ -55,7 +55,9 @@ public class StatsService {
                                COALESCE(SUM(deaths), 0)                                             AS deaths,
                                COALESCE(SUM(kill_fame), 0)                                          AS kill_fame,
                                COUNT(*)                                                             AS battles,
-                               COUNT(*) FILTER (WHERE battle_player_count > :ctaThreshold)          AS ctas
+                               -- Our own turnout, not the size of the fight: a few of us
+                               -- swept into someone else's brawl is not a CTA.
+                               COUNT(*) FILTER (WHERE guild_player_count >= :ctaThreshold)          AS ctas
                         FROM battle_participation
                         WHERE albion_player_id = :playerId
                           AND battle_start_time >= :since
