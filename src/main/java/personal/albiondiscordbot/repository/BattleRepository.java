@@ -20,12 +20,13 @@ public interface BattleRepository extends JpaRepository<Battle, Long> {
             value =
                     """
                     SELECT b.* FROM battle b
-                    WHERE b.player_count > :minPlayers
+                    WHERE b.player_count >= :minTotalPlayers
                       AND EXISTS (SELECT 1 FROM battle_participation p
-                                  WHERE p.albion_battle_id = b.albion_battle_id)
+                                  WHERE p.albion_battle_id = b.albion_battle_id
+                                    AND p.guild_player_count >= :minGuildPlayers)
                     ORDER BY b.start_time DESC
                     LIMIT 1
                     """,
             nativeQuery = true)
-    Optional<Battle> findLatestCta(int minPlayers);
+    Optional<Battle> findLatestCta(int minTotalPlayers, int minGuildPlayers);
 }

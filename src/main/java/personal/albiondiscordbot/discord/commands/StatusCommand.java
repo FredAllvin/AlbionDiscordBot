@@ -115,7 +115,7 @@ public class StatusCommand implements SlashCommand {
         config.append(trackedGuildCount == 0 ? "❌" : "✅").append(" in-game guild");
         embed.addField("Configuration", config.toString(), false);
 
-        embed.addField("CTA threshold", "%d+ of our own in a fight".formatted(context.ctaMinPlayers()), true);
+        embed.addField("CTA threshold", context.ctaRule(), true);
 
         event.getHook().sendMessageEmbeds(embed.build()).queue();
     }

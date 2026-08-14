@@ -145,32 +145,39 @@ class BattleIngestServiceTest extends PostgresTestBase {
     }
 
     @Test
-    @DisplayName("a small party in someone else's big fight is not a CTA")
-    void smallPartyInBigFightIsNotACta() {
+    @DisplayName("a battle counts as a CTA only when BOTH thresholds are met")
+    void ctaNeedsBothThresholds() {
         ingestService.ingest(battle, trackedGuildIds);
 
-        int ourTurnout = jdbc.sql(
+        int total = battle.playerCount();
+        int ours = jdbc.sql(
                         "SELECT DISTINCT guild_player_count FROM battle_participation WHERE albion_battle_id = :id")
                 .param("id", battle.id())
                 .query(Integer.class)
                 .single();
 
-        // A threshold just above our turnout must exclude the battle even though the
-        // fight itself is far larger than that threshold.
-        int threshold = ourTurnout + 1;
-        assertThat(battle.playerCount()).isGreaterThan(threshold);
+        // Each threshold is set either just below (met) or just above (not met) the real
+        // figure, so all four combinations are exercised against the same battle.
+        assertThat(matchesCta(total, ours)).as("both met").isTrue();
+        assertThat(matchesCta(total + 1, ours)).as("fight too small").isFalse();
+        assertThat(matchesCta(total, ours + 1)).as("too few of ours").isFalse();
+        assertThat(matchesCta(total + 1, ours + 1)).as("neither met").isFalse();
+    }
 
-        Long ctas = jdbc.sql(
+    private boolean matchesCta(int minTotal, int minGuild) {
+        Long count = jdbc.sql(
                         """
                         SELECT count(*) FROM battle_participation
-                        WHERE albion_battle_id = :id AND guild_player_count >= :threshold
+                        WHERE albion_battle_id = :id
+                          AND battle_player_count >= :minTotal
+                          AND guild_player_count >= :minGuild
                         """)
                 .param("id", battle.id())
-                .param("threshold", threshold)
+                .param("minTotal", minTotal)
+                .param("minGuild", minGuild)
                 .query(Long.class)
                 .single();
-
-        assertThat(ctas).isZero();
+        return count > 0;
     }
 
     @Test

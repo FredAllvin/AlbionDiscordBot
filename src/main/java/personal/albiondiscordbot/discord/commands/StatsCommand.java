@@ -66,7 +66,8 @@ public class StatsCommand implements SlashCommand {
                                 ? "You are not registered. Use `/register <your character name>` first."
                                 : "%s is not registered.".formatted(subject.getAsMention())));
 
-        StatsService.PlayerStats stats = statsService.compute(registration, context.ctaMinPlayers());
+        StatsService.PlayerStats stats = statsService.compute(
+                registration, context.ctaMinTotalPlayers(), context.ctaMinGuildPlayers());
 
         EmbedBuilder embed = new EmbedBuilder()
                 .setColor(new Color(0x3498DB))
@@ -77,7 +78,7 @@ public class StatsCommand implements SlashCommand {
         StatsService.BattleTotals battles = stats.battles();
         embed.addField(
                 "CTAs attended",
-                "**%d**\n_fights with %d+ of our own_".formatted(battles.ctas(), context.ctaMinPlayers()),
+                "**%d**\n_%s_".formatted(battles.ctas(), context.ctaRule()),
                 true);
         embed.addField("Battles tracked", Long.toString(battles.battles()), true);
         embed.addField("K / D", "%d / %d  (%s)".formatted(battles.kills(), battles.deaths(), battles.killDeathRatio()), true);

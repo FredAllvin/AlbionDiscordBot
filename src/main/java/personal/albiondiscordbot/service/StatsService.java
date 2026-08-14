@@ -46,7 +46,7 @@ public class StatsService {
     }
 
     @Transactional
-    public PlayerStats compute(Registration registration, int ctaThreshold) {
+    public PlayerStats compute(Registration registration, int ctaMinTotal, int ctaMinGuild) {
         Instant trackingSince = trackingWindowStart(registration);
 
         BattleTotals totals = jdbc.sql(
@@ -55,9 +55,10 @@ public class StatsService {
                                COALESCE(SUM(deaths), 0)                                             AS deaths,
                                COALESCE(SUM(kill_fame), 0)                                          AS kill_fame,
                                COUNT(*)                                                             AS battles,
-                               -- Our own turnout, not the size of the fight: a few of us
-                               -- swept into someone else's brawl is not a CTA.
-                               COUNT(*) FILTER (WHERE guild_player_count >= :ctaThreshold)          AS ctas
+                               -- Both conditions: a big fight AND enough of our own in
+                               -- it. Either alone counts the wrong battles.
+                               COUNT(*) FILTER (WHERE battle_player_count >= :ctaMinTotal
+                                                  AND guild_player_count >= :ctaMinGuild) AS ctas
                         FROM battle_participation
                         WHERE albion_player_id = :playerId
                           AND battle_start_time >= :since
@@ -65,7 +66,8 @@ public class StatsService {
                 .param("playerId", registration.getAlbionPlayerId())
                 // The Postgres driver cannot bind Instant to timestamptz directly.
                 .param("since", trackingSince.atOffset(java.time.ZoneOffset.UTC))
-                .param("ctaThreshold", ctaThreshold)
+                .param("ctaMinTotal", ctaMinTotal)
+                .param("ctaMinGuild", ctaMinGuild)
                 .query((rs, rowNum) -> new BattleTotals(
                         rs.getLong("kills"),
                         rs.getLong("deaths"),

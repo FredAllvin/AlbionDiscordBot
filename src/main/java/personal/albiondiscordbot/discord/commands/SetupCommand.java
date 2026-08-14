@@ -83,10 +83,17 @@ public class SetupCommand implements SlashCommand {
                                 false),
                         new OptionData(
                                         OptionType.INTEGER,
-                                        "cta_min_players",
-                                        "How many of YOUR guild must fight for it to count as a CTA (default 10)",
+                                        "cta_min_total_players",
+                                        "How big the whole fight must be to count as a CTA (default 30)",
                                         false)
                                 .setMinValue(2)
+                                .setMaxValue(1000),
+                        new OptionData(
+                                        OptionType.INTEGER,
+                                        "cta_min_guild_players",
+                                        "How many of YOUR guild must be in it (default 10). Both must be met.",
+                                        false)
+                                .setMinValue(1)
                                 .setMaxValue(500));
     }
 
@@ -100,7 +107,8 @@ public class SetupCommand implements SlashCommand {
         Role verifiedRole = event.getOption("verified_role", OptionMapping::getAsRole);
         TextChannel logChannel = asTextChannel(event.getOption("log_channel"));
         TextChannel killboardChannel = asTextChannel(event.getOption("killboard_channel"));
-        Integer ctaMinPlayers = event.getOption("cta_min_players", OptionMapping::getAsInt);
+        Integer ctaMinTotal = event.getOption("cta_min_total_players", OptionMapping::getAsInt);
+        Integer ctaMinGuild = event.getOption("cta_min_guild_players", OptionMapping::getAsInt);
 
         if (staffRole != null) {
             config.setStaffRoleId(staffRole.getIdLong());
@@ -114,8 +122,11 @@ public class SetupCommand implements SlashCommand {
         if (killboardChannel != null) {
             config.setKillboardChannelId(killboardChannel.getIdLong());
         }
-        if (ctaMinPlayers != null) {
-            config.setCtaMinPlayers(ctaMinPlayers);
+        if (ctaMinTotal != null) {
+            config.setCtaMinTotalPlayers(ctaMinTotal);
+        }
+        if (ctaMinGuild != null) {
+            config.setCtaMinGuildPlayers(ctaMinGuild);
         }
         config.setSetupCompleted(true);
         guildConfigService.save(config);
@@ -129,7 +140,11 @@ public class SetupCommand implements SlashCommand {
                 .addField("Verified role", mentionRole(config.getVerifiedRoleId()), true)
                 .addField("Log channel", mentionChannel(config.getLogChannelId()), true)
                 .addField("Killboard channel", mentionChannel(config.getKillboardChannelId()), true)
-                .addField("CTA threshold", "%d+ of our own in a fight".formatted(config.getCtaMinPlayers()), true);
+                .addField(
+                        "Counts as a CTA",
+                        "%d+ players in the fight\n**and** %d+ of our own"
+                                .formatted(config.getCtaMinTotalPlayers(), config.getCtaMinGuildPlayers()),
+                        true);
 
         StringBuilder next = new StringBuilder();
         if (config.getStaffRoleId() == null) {

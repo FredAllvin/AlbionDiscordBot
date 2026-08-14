@@ -22,7 +22,18 @@ public record CommandContext(Guild guild, Member member, DiscordGuildConfig conf
         return member.getIdLong();
     }
 
-    public int ctaMinPlayers() {
-        return config != null ? config.getCtaMinPlayers() : 10;
+    /** Minimum size of the whole fight for it to count as a CTA. */
+    public int ctaMinTotalPlayers() {
+        return config != null ? config.getCtaMinTotalPlayers() : 30;
+    }
+
+    /** Minimum number of our own in that fight. Both thresholds must be met. */
+    public int ctaMinGuildPlayers() {
+        return config != null ? config.getCtaMinGuildPlayers() : 10;
+    }
+
+    /** Human-readable form of the pair, e.g. {@code "30+ players, 10+ of ours"}. */
+    public String ctaRule() {
+        return "%d+ players, %d+ of ours".formatted(ctaMinTotalPlayers(), ctaMinGuildPlayers());
     }
 }

@@ -172,14 +172,23 @@ is in a tracked guild. It cannot confirm the Discord user owns it. Impersonation
 handled after the fact with `/unregister`; `registered_by` and `forced` are recorded for
 audit.
 
-**A CTA is measured by your own turnout, not the size of the fight.** The threshold
-(default **10**, set with `/setup cta_min_players`) counts how many of *your* guild
-fought, not total players. Measuring the whole battle counted the enemy too, so a 3-man
-gank squad swept into someone else's 40-player brawl registered as a CTA while a 15-man
-guild op against a small group did not.
+**A CTA has to satisfy two conditions at once** — it was a big fight, *and* enough of
+your own were in it:
 
-The same number drives killboard posts and `/stats` attendance, so the two always agree
-on what counts.
+```
+/setup cta_min_total_players:30 cta_min_guild_players:10
+```
+
+| Fight | Ours | CTA? |
+|---|---|---|
+| 200 players | 45 | ✅ |
+| 200 players | 3 | ❌ swept into someone else's zerg |
+| 12 players | 11 | ❌ ganking, not a call to arms |
+| 40 players | 15 | ✅ |
+
+Either test on its own lets the wrong thing through, which is why both are required. The
+same pair drives killboard posts, `/stats` attendance and `/split-cta`, so nothing can
+disagree about what counted.
 
 **CTA attendance is a lower bound.** The Albion API only lists players who scored a
 kill, died, or earned assist fame in a battle. Someone who showed up and contributed

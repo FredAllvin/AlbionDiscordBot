@@ -67,11 +67,12 @@ public class KillboardService {
                 continue;
             }
 
+            // Both tests must pass. Total size alone would post a handful of us caught
+            // in someone else's brawl; our turnout alone would post ten of us ganking
+            // three people. A CTA is a big fight that we actually showed up to.
             Set<String> ourGuildIds = ourGuildIds(discordGuildId);
-            // Measured against our own turnout, not the total size of the fight. A
-            // handful of us caught in someone else's 40-player brawl is not a CTA, and
-            // a 15-man guild op against a small group is.
-            if (ourPlayerCount(battle, ourGuildIds) < config.getCtaMinPlayers()) {
+            if (battle.playerCount() < config.getCtaMinTotalPlayers()
+                    || ourPlayerCount(battle, ourGuildIds) < config.getCtaMinGuildPlayers()) {
                 continue;
             }
             KillboardPost.Key key = new KillboardPost.Key(discordGuildId, battle.id());

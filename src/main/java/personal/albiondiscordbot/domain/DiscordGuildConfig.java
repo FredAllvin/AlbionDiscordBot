@@ -30,8 +30,17 @@ public class DiscordGuildConfig {
     @Column(name = "killboard_channel_id")
     private Long killboardChannelId;
 
-    @Column(name = "cta_min_players", nullable = false)
-    private int ctaMinPlayers = 10;
+    /**
+     * A battle counts as a CTA only if it satisfies <em>both</em> thresholds: it was a
+     * big fight, and enough of our own were in it. Either test alone lets the wrong
+     * thing through — total size counts a small party swept into someone else's zerg,
+     * our turnout counts ten of us ganking three people.
+     */
+    @Column(name = "cta_min_total_players", nullable = false)
+    private int ctaMinTotalPlayers = 30;
+
+    @Column(name = "cta_min_guild_players", nullable = false)
+    private int ctaMinGuildPlayers = 10;
 
     @Column(name = "setup_completed", nullable = false)
     private boolean setupCompleted;
@@ -95,12 +104,20 @@ public class DiscordGuildConfig {
         this.killboardChannelId = killboardChannelId;
     }
 
-    public int getCtaMinPlayers() {
-        return ctaMinPlayers;
+    public int getCtaMinTotalPlayers() {
+        return ctaMinTotalPlayers;
     }
 
-    public void setCtaMinPlayers(int ctaMinPlayers) {
-        this.ctaMinPlayers = ctaMinPlayers;
+    public void setCtaMinTotalPlayers(int ctaMinTotalPlayers) {
+        this.ctaMinTotalPlayers = ctaMinTotalPlayers;
+    }
+
+    public int getCtaMinGuildPlayers() {
+        return ctaMinGuildPlayers;
+    }
+
+    public void setCtaMinGuildPlayers(int ctaMinGuildPlayers) {
+        this.ctaMinGuildPlayers = ctaMinGuildPlayers;
     }
 
     public boolean isSetupCompleted() {
