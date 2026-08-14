@@ -175,16 +175,38 @@ public class RegistrationService {
      * the members endpoint is known to be stale and lists characters that left the guild
      * long ago, which would make an audit pass people it should catch.
      */
-    public boolean stillInTrackedGuild(Registration registration, List<TrackedAlbionGuild> tracked) {
+    public MembershipCheck checkMembership(Registration registration, List<TrackedAlbionGuild> tracked) {
         if (registration.getAlbionPlayerId().startsWith("UNRESOLVED:")) {
-            return false;
+            return MembershipCheck.UNKNOWN;
         }
-        Optional<AlbionPlayerDetail> detail = albion.getPlayer(registration.getAlbionPlayerId());
+        Optional<AlbionPlayerDetail> detail;
+        try {
+            detail = albion.getPlayer(registration.getAlbionPlayerId());
+        } catch (RuntimeException e) {
+            log.warn("Membership check failed for {}", registration.getAlbionPlayerName(), e);
+            return MembershipCheck.UNKNOWN;
+        }
         if (detail.isEmpty()) {
-            return false;
+            return MembershipCheck.UNKNOWN;
         }
         String guildId = detail.get().guildId();
-        return guildId != null && tracked.stream().anyMatch(t -> t.getAlbionGuildId().equals(guildId));
+        boolean inGuild =
+                guildId != null && tracked.stream().anyMatch(t -> t.getAlbionGuildId().equals(guildId));
+
+        return inGuild ? MembershipCheck.IN_GUILD : MembershipCheck.LEFT_GUILD;
+    }
+
+    /**
+     * Result of re-checking a registration against the live API.
+     *
+     * <p>{@link #UNKNOWN} exists so a timeout, a 503 or a Cloudflare hiccup is never
+     * mistaken for someone leaving the guild. Collapsing it into "not in guild" would
+     * mean one bad API minute could strip the verified role from the entire roster.
+     */
+    public enum MembershipCheck {
+        IN_GUILD,
+        LEFT_GUILD,
+        UNKNOWN
     }
 
     @Transactional

@@ -1,7 +1,9 @@
 package personal.albiondiscordbot.repository;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import personal.albiondiscordbot.domain.Registration;
@@ -36,4 +38,20 @@ public interface RegistrationRepository extends JpaRepository<Registration, Long
                   WHERE p.albionBattleId = :albionBattleId)
             """)
     List<Registration> findParticipantsOfBattle(Long discordGuildId, Long albionBattleId);
+
+    /**
+     * Active registrations whose last API check is oldest, so a background sweep can
+     * freshen a few at a time rather than hammering the API with the whole roster.
+     * Never-checked ones come first.
+     */
+    @Query("""
+            SELECT r FROM Registration r
+            WHERE r.active = true
+              AND (r.lastValidatedAt IS NULL OR r.lastValidatedAt < :staleBefore)
+            ORDER BY r.lastValidatedAt ASC NULLS FIRST
+            """)
+    List<Registration> findStalest(Instant staleBefore, Pageable pageable);
+
+    /** Registrations the last sweep found are no longer in a tracked guild. */
+    List<Registration> findByDiscordGuildIdAndActiveTrueAndLastValidationOkFalse(Long discordGuildId);
 }

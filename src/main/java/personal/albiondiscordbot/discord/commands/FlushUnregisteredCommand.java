@@ -71,7 +71,7 @@ public class FlushUnregisteredCommand implements SlashCommand {
                         new OptionData(
                                 OptionType.BOOLEAN,
                                 "recheck_guild",
-                                "Also re-check each registration against the Albion API (slower)",
+                                "Re-check every registration against the Albion API now (slower, default true)",
                                 false));
     }
 
@@ -92,12 +92,15 @@ public class FlushUnregisteredCommand implements SlashCommand {
         }
 
         boolean confirm = event.getOption("confirm", false, OptionMapping::getAsBoolean);
-        boolean recheckGuild = event.getOption("recheck_guild", false, OptionMapping::getAsBoolean);
+        // Defaults to true: catching people who left is the entire point of this command,
+        // and defaulting it off made the audit quietly miss them.
+        boolean recheckGuild = event.getOption("recheck_guild", true, OptionMapping::getAsBoolean);
 
         List<TrackedAlbionGuild> tracked = trackedGuilds.findByDiscordGuildId(context.guildId());
         List<Member> holders = context.guild().getMembersWithRoles(role);
 
         List<String> notRegistered = new ArrayList<>();
+        List<String> unchecked = new ArrayList<>();
         List<String> leftGuild = new ArrayList<>();
         List<Member> toStrip = new ArrayList<>();
 
@@ -115,13 +118,19 @@ public class FlushUnregisteredCommand implements SlashCommand {
             }
             if (recheckGuild && !tracked.isEmpty()) {
                 try {
-                    if (!registrationService.stillInTrackedGuild(registration.get(), tracked)) {
+                    RegistrationService.MembershipCheck check =
+                            registrationService.checkMembership(registration.get(), tracked);
+
+                    if (check == RegistrationService.MembershipCheck.LEFT_GUILD) {
                         leftGuild.add("%s (%s)"
                                 .formatted(holder.getEffectiveName(), registration.get().getAlbionPlayerName()));
                         toStrip.add(holder);
                         registrationService.recordValidation(registration.get(), false);
-                    } else {
+                    } else if (check == RegistrationService.MembershipCheck.IN_GUILD) {
                         registrationService.recordValidation(registration.get(), true);
+                    } else {
+                        // UNKNOWN: the API could not answer. Never strip a role on that basis.
+                        unchecked.add(holder.getEffectiveName());
                     }
                 } catch (RuntimeException e) {
                     // An API hiccup must never cost someone their role.
@@ -160,8 +169,16 @@ public class FlushUnregisteredCommand implements SlashCommand {
         } else if (!confirm) {
             embed.setDescription("Nothing has changed yet. Re-run with `confirm: true` to apply.");
         }
+        if (!unchecked.isEmpty()) {
+            embed.addField(
+                    "Could not check (%d)".formatted(unchecked.size()),
+                    truncate(unchecked)
+                            + "\nThe Albion API did not answer for these, so they were left alone "
+                            + "rather than assumed to have left.",
+                    false);
+        }
         if (!recheckGuild) {
-            embed.setFooter("Guild membership was not re-checked. Add recheck_guild: true to verify against the API.");
+            embed.setFooter("Guild membership was NOT re-checked — only missing registrations were caught.");
         }
 
         event.getHook().sendMessageEmbeds(embed.build()).queue();
