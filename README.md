@@ -218,15 +218,48 @@ A CTA that starts and finishes inside a gap longer than a day is never recorded,
 `/stats` attendance and `/split-cta` will never know it happened. Everything before and
 after the gap is unaffected.
 
+### Preparing a fresh server
+
+On a clean Debian or Ubuntu box, all it needs is Docker and git:
+
+```bash
+sudo apt update && sudo apt install -y git
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker "$USER"   # then log out and back in
+```
+
+**If the server has 1 GB of RAM, add swap before building.** Compiling the project is
+far more memory-hungry than running it, and the build gets OOM-killed without headroom:
+
+```bash
+sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
+sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+No firewall rules are needed for the bot. It makes only outbound connections, and
+Postgres is bound to `127.0.0.1` so it is never reachable from the internet.
+
 ### Deploy with Docker
 
 Everything is already containerised. On the server:
 
 ```bash
-git clone <your repo> && cd AlbionDiscordBot
-cp .env.example .env      # fill in BOT_TOKEN and POSTGRES_PASSWORD
+git clone https://github.com/FredAllvin/AlbionDiscordBot.git
+cd AlbionDiscordBot
+cp .env.example .env
+nano .env                 # real BOT_TOKEN, and a generated POSTGRES_PASSWORD
 docker compose --profile full up -d --build
 ```
+
+Generate the database password rather than inventing one — nothing needs to memorise it:
+
+```bash
+openssl rand -base64 24
+```
+
+Use an editor for `.env` rather than `echo`, so the token never lands in your shell
+history.
 
 That runs Postgres and the bot together. `restart: unless-stopped` brings both back
 after a crash or a reboot, so nothing needs babysitting.
@@ -268,7 +301,15 @@ docker exec albionbot-postgres pg_dump -U albionbot albionbot \
   | gzip > "albionbot-$(date +%F).sql.gz"
 ```
 
-Put that in a cron job and copy the files off the machine. To restore:
+Wire it up as a nightly cron job (`crontab -e`), keeping 14 days:
+
+```cron
+0 4 * * * cd ~/AlbionDiscordBot && docker exec albionbot-postgres pg_dump -U albionbot albionbot | gzip > ~/backups/albionbot-$(date +\%F).sql.gz && find ~/backups -name '*.sql.gz' -mtime +14 -delete
+```
+
+`mkdir -p ~/backups` first, and note the `%` characters must be escaped in cron. Copy the
+files off the machine periodically — a backup that only exists on the server it protects
+is not a backup. To restore:
 
 ```bash
 gunzip -c albionbot-2026-08-14.sql.gz | docker exec -i albionbot-postgres psql -U albionbot albionbot
