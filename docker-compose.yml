@@ -1,0 +1,49 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: albionbot-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-albionbot}
+      POSTGRES_USER: ${POSTGRES_USER:-albionbot}
+      # Fail loudly rather than silently defaulting to a weak password.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    ports:
+      # Bound to loopback so the database is not exposed on a shared host.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - albion-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-albionbot} -d ${POSTGRES_DB:-albionbot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Only starts under the "full" profile, so `docker compose up -d` on a dev machine
+  # still brings up Postgres alone and leaves the bot to the IDE:
+  #   dev     docker compose up -d
+  #   server  docker compose --profile full up -d
+  bot:
+    profiles: ["full"]
+    build: .
+    container_name: albionbot
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN:?set BOT_TOKEN in .env}
+      # "postgres" is the service name on the compose network, not localhost —
+      # localhost inside this container is the container itself.
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-albionbot}
+      POSTGRES_USER: ${POSTGRES_USER:-albionbot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    logging:
+      # Without a cap these grow until they fill the disk on a small VPS.
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  albion-pgdata:

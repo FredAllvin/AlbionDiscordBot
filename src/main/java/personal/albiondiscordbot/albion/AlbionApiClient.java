@@ -1,0 +1,184 @@
+package personal.albiondiscordbot.albion;
+
+import java.time.Duration;
+import java.util.List;
+import java.util.Locale;
+import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatusCode;
+import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
+import personal.albiondiscordbot.albion.dto.AlbionBattle;
+import personal.albiondiscordbot.albion.dto.AlbionGuildDetail;
+import personal.albiondiscordbot.albion.dto.AlbionPlayerDetail;
+import personal.albiondiscordbot.albion.dto.AlbionSearchResponse;
+import personal.albiondiscordbot.config.AlbionProperties;
+
+/**
+ * Client for the Albion Online game-info API (EU region by default).
+ *
+ * <p>Every request goes through a single-permit rate limiter with a minimum spacing, so
+ * an interactive {@code /register} burst cannot collide with the battle poller and get
+ * the whole bot rate-limited. Cloudflare fronts this API and is unforgiving of bursts.
+ */
+@Component
+public class AlbionApiClient {
+
+    private static final Logger log = LoggerFactory.getLogger(AlbionApiClient.class);
+
+    /** The API caps this; asking for more returns HTTP 400. */
+    public static final int MAX_BATTLE_PAGE_SIZE = 51;
+
+    private final RestClient restClient;
+    private final AlbionRateLimiter rateLimiter;
+
+    public AlbionApiClient(RestClient.Builder builder, AlbionProperties properties) {
+        AlbionProperties.Api api = properties.api();
+        this.restClient = builder.baseUrl(api.baseUrl())
+                // Mandatory: Cloudflare answers default Java user agents with 403.
+                .defaultHeader("User-Agent", api.userAgent())
+                .defaultHeader("Accept", "application/json")
+                .build();
+        this.rateLimiter = new AlbionRateLimiter(api.minRequestInterval());
+    }
+
+    /**
+     * Finds a character by exact name, case-insensitively.
+     *
+     * <p>The search endpoint matches substrings, so a query for {@code Bob} also
+     * returns {@code Bobby} and {@code BobX}. Returning the first hit would let someone
+     * register a name they did not type, so only an exact match counts.
+     */
+    public Optional<AlbionSearchResponse.PlayerHit> findPlayerByExactName(String name) {
+        AlbionSearchResponse response = search(name);
+        String wanted = name.trim().toLowerCase(Locale.ROOT);
+
+        return response.players().stream()
+                .filter(p -> p.name() != null && p.name().toLowerCase(Locale.ROOT).equals(wanted))
+                .findFirst();
+    }
+
+    /** Finds a guild by exact name, case-insensitively. */
+    public Optional<AlbionSearchResponse.GuildHit> findGuildByExactName(String name) {
+        AlbionSearchResponse response = search(name);
+        String wanted = name.trim().toLowerCase(Locale.ROOT);
+
+        return response.guilds().stream()
+                .filter(g -> g.name() != null && g.name().toLowerCase(Locale.ROOT).equals(wanted))
+                .findFirst();
+    }
+
+    public AlbionSearchResponse search(String query) {
+        return rateLimiter.call(() -> restClient
+                .get()
+                .uri(uri -> uri.path("/search").queryParam("q", query).build())
+                .retrieve()
+                .body(AlbionSearchResponse.class));
+    }
+
+    /** The authoritative current state of a character, including its guild. */
+    public Optional<AlbionPlayerDetail> getPlayer(String albionPlayerId) {
+        return rateLimiter.call(() -> {
+            try {
+                return Optional.ofNullable(restClient
+                        .get()
+                        .uri("/players/{id}", albionPlayerId)
+                        .retrieve()
+                        .body(AlbionPlayerDetail.class));
+            } catch (RestClientException e) {
+                if (isNotFound(e)) {
+                    return Optional.empty();
+                }
+                throw e;
+            }
+        });
+    }
+
+    public Optional<AlbionGuildDetail> getGuild(String albionGuildId) {
+        return rateLimiter.call(() -> {
+            try {
+                return Optional.ofNullable(restClient
+                        .get()
+                        .uri("/guilds/{id}", albionGuildId)
+                        .retrieve()
+                        .body(AlbionGuildDetail.class));
+            } catch (RestClientException e) {
+                if (isNotFound(e)) {
+                    return Optional.empty();
+                }
+                throw e;
+            }
+        });
+    }
+
+    /**
+     * One page of recent battles.
+     *
+     * @param range {@code day}, {@code week} or {@code month}
+     * @param offset how far back to page; deep offsets work
+     */
+    public List<AlbionBattle> getBattles(String range, int limit, int offset) {
+        int cappedLimit = Math.min(limit, MAX_BATTLE_PAGE_SIZE);
+        return rateLimiter.call(() -> {
+            List<AlbionBattle> battles = restClient
+                    .get()
+                    .uri(uri -> uri.path("/battles")
+                            .queryParam("range", range)
+                            .queryParam("limit", cappedLimit)
+                            .queryParam("offset", offset)
+                            .queryParam("sort", "recent")
+                            .build())
+                    .retrieve()
+                    .body(new org.springframework.core.ParameterizedTypeReference<List<AlbionBattle>>() {});
+            return battles == null ? List.of() : battles;
+        });
+    }
+
+    private boolean isNotFound(RestClientException e) {
+        if (e instanceof org.springframework.web.client.HttpStatusCodeException statusException) {
+            HttpStatusCode status = statusException.getStatusCode();
+            if (status.value() == 403) {
+                // Almost always the User-Agent being rejected by Cloudflare rather than
+                // a genuine authorisation problem, so make it loud instead of silent.
+                log.error(
+                        "Albion API returned 403. This usually means the configured User-Agent "
+                                + "was rejected by Cloudflare — check albion.api.user-agent.");
+            }
+            return status.value() == 404;
+        }
+        return false;
+    }
+
+    /** Serialises requests and enforces a minimum gap between them. */
+    static final class AlbionRateLimiter {
+
+        private final long minIntervalMillis;
+        private final Object lock = new Object();
+        private long lastRequestAt;
+
+        AlbionRateLimiter(Duration minInterval) {
+            this.minIntervalMillis = minInterval == null ? 0L : minInterval.toMillis();
+        }
+
+        <T> T call(java.util.function.Supplier<T> request) {
+            synchronized (lock) {
+                long wait = minIntervalMillis - (System.currentTimeMillis() - lastRequestAt);
+                if (wait > 0) {
+                    try {
+                        Thread.sleep(wait);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new AlbionApiException("Interrupted while waiting to call the Albion API", e);
+                    }
+                }
+                try {
+                    return request.get();
+                } finally {
+                    lastRequestAt = System.currentTimeMillis();
+                }
+            }
+        }
+    }
+}
