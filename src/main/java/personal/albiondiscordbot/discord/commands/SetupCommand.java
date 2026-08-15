@@ -4,7 +4,9 @@ import java.awt.Color;
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.Permission;
 import net.dv8tion.jda.api.entities.Role;
+import net.dv8tion.jda.api.entities.channel.ChannelType;
 import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
+import net.dv8tion.jda.api.entities.channel.unions.GuildChannelUnion;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
 import net.dv8tion.jda.api.interactions.InteractionContextType;
 import net.dv8tion.jda.api.interactions.commands.OptionMapping;
@@ -16,6 +18,7 @@ import net.dv8tion.jda.api.interactions.commands.DefaultMemberPermissions;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 import personal.albiondiscordbot.discord.CommandContext;
+import personal.albiondiscordbot.discord.CommandException;
 import personal.albiondiscordbot.discord.CommandRegistrar;
 import personal.albiondiscordbot.discord.PermissionService;
 import personal.albiondiscordbot.discord.SlashCommand;
@@ -74,13 +77,18 @@ public class SetupCommand implements SlashCommand {
                                 "verified_role",
                                 "Role granted to members who register an in-game name",
                                 false),
+                        // Restricted to text channels so the picker cannot offer a voice,
+                        // forum or category channel that asTextChannel() would then throw
+                        // on, turning a mis-click into "something went wrong".
                         new OptionData(
-                                OptionType.CHANNEL, "log_channel", "Channel for audit logs", false),
+                                        OptionType.CHANNEL, "log_channel", "Channel for audit logs", false)
+                                .setChannelTypes(ChannelType.TEXT),
                         new OptionData(
-                                OptionType.CHANNEL,
-                                "killboard_channel",
-                                "Channel for automatic killboard posts of large battles",
-                                false),
+                                        OptionType.CHANNEL,
+                                        "killboard_channel",
+                                        "Channel for automatic killboard posts of large battles",
+                                        false)
+                                .setChannelTypes(ChannelType.TEXT),
                         new OptionData(
                                         OptionType.INTEGER,
                                         "cta_min_total_players",
@@ -170,11 +178,22 @@ public class SetupCommand implements SlashCommand {
         event.getHook().sendMessageEmbeds(embed.build()).queue();
     }
 
+    /**
+     * The option already restricts the picker to text channels; this is the belt-and-
+     * braces half, since Discord clients have been known to send a channel type the
+     * option did not ask for.
+     */
     private TextChannel asTextChannel(OptionMapping option) {
         if (option == null) {
             return null;
         }
-        return option.getAsChannel().asTextChannel();
+        GuildChannelUnion channel = option.getAsChannel();
+        if (channel.getType() != ChannelType.TEXT) {
+            throw new CommandException(
+                    "%s is not a text channel. Pick a normal text channel for that option."
+                            .formatted(channel.getAsMention()));
+        }
+        return channel.asTextChannel();
     }
 
     private String mentionRole(Long roleId) {
