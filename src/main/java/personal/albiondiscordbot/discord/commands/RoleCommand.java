@@ -27,7 +27,7 @@ import personal.albiondiscordbot.util.Formatting;
 
 /**
  * {@code /role add <name> @user @user …} — tags an ad-hoc group, typically so
- * {@code /payout} can pay them all at once.
+ * {@code /split} can credit them all at once.
  *
  * <p>Slash commands cannot declare a variadic list of users, so {@code members} is a
  * single STRING option and the mentions are read back out of it with
@@ -119,7 +119,12 @@ public class RoleCommand implements SlashCommand {
                     truncate(failed) + "\nMy role must sit above " + role.getAsMention() + ".",
                     false);
         }
-        embed.addField("Next", "Pay everyone with `/payout role:%s amount:<silver>`".formatted(role.getName()), false);
+        // /split, not /payout: this role exists to be credited a share of loot. /payout is
+        // the cashout in the other direction and takes no amount at all.
+        embed.addField(
+                "Next",
+                "Credit everyone with `/split role:%s amount:<silver>`".formatted(role.getName()),
+                false);
 
         event.getHook().sendMessageEmbeds(embed.build()).queue();
     }

@@ -189,9 +189,11 @@ public class KillboardService {
             embed.addField("Our top performers", topPlayers, false);
         }
 
-        // The battle id is what /payout-cta takes, so make it copyable rather than
-        // making officers dig it out of the link.
-        embed.setFooter("Battle " + battle.id() + " · pay everyone here with /payout-cta");
+        // The battle id is what /split-cta takes, so make it copyable rather than making
+        // officers dig it out of the link. Naming the command correctly matters more than
+        // usual here: /payout also exists and moves silver the other way, so an officer
+        // following a wrong hint would clear balances instead of crediting them.
+        embed.setFooter("Battle " + battle.id() + " · credit everyone here with /split-cta");
 
         return embed.build();
     }

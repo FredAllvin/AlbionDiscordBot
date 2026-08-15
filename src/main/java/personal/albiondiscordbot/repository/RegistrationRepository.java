@@ -26,7 +26,7 @@ public interface RegistrationRepository extends JpaRepository<Registration, Long
     /**
      * Registered members of this Discord server who fought in the given battle.
      *
-     * <p>This is what lets {@code /payout-cta} pay the people who actually showed up,
+     * <p>This is what lets {@code /split-cta} credit the people who actually showed up,
      * without anyone hand-tagging them first.
      */
     @Query("""
