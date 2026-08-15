@@ -46,26 +46,39 @@ public class StatsService {
     }
 
     @Transactional
-    public PlayerStats compute(Registration registration, int ctaMinTotal, int ctaMinGuild) {
+    public PlayerStats compute(
+            Registration registration, long discordGuildId, int ctaMinTotal, int ctaMinGuild) {
         Instant trackingSince = trackingWindowStart(registration);
 
         BattleTotals totals = jdbc.sql(
                         """
-                        SELECT COALESCE(SUM(kills), 0)                                              AS kills,
-                               COALESCE(SUM(deaths), 0)                                             AS deaths,
-                               COALESCE(SUM(kill_fame), 0)                                          AS kill_fame,
-                               COUNT(*)                                                             AS battles,
+                        SELECT COALESCE(SUM(kills), 0)     AS kills,
+                               COALESCE(SUM(deaths), 0)    AS deaths,
+                               COALESCE(SUM(kill_fame), 0) AS kill_fame,
+                               COUNT(*)                    AS battles,
                                -- Both conditions: a big fight AND enough of our own in
                                -- it. Either alone counts the wrong battles.
-                               COUNT(*) FILTER (WHERE battle_player_count >= :ctaMinTotal
-                                                  AND guild_player_count >= :ctaMinGuild) AS ctas
-                        FROM battle_participation
-                        WHERE albion_player_id = :playerId
-                          AND battle_start_time >= :since
+                               --
+                               -- Turnout is counted through this server's tracked guilds
+                               -- rather than read from guild_player_count, which is a
+                               -- global figure covering every Discord server's guilds.
+                               -- Same answer on one server, correct answer on several.
+                               COUNT(*) FILTER (
+                                   WHERE bp.battle_player_count >= :ctaMinTotal
+                                     AND (SELECT count(*) FROM battle_participation ours
+                                          JOIN tracked_albion_guild t
+                                            ON t.albion_guild_id = ours.albion_guild_id
+                                          WHERE ours.albion_battle_id = bp.albion_battle_id
+                                            AND t.discord_guild_id = :discordGuildId)
+                                         >= :ctaMinGuild) AS ctas
+                        FROM battle_participation bp
+                        WHERE bp.albion_player_id = :playerId
+                          AND bp.battle_start_time >= :since
                         """)
                 .param("playerId", registration.getAlbionPlayerId())
                 // The Postgres driver cannot bind Instant to timestamptz directly.
                 .param("since", trackingSince.atOffset(java.time.ZoneOffset.UTC))
+                .param("discordGuildId", discordGuildId)
                 .param("ctaMinTotal", ctaMinTotal)
                 .param("ctaMinGuild", ctaMinGuild)
                 .query((rs, rowNum) -> new BattleTotals(

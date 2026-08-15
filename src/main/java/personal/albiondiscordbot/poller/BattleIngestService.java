@@ -62,8 +62,12 @@ public class BattleIngestService {
                 .query(Boolean.class)
                 .single());
 
-        // Counted up front so every row for this battle carries the same figure — this
-        // is what the CTA threshold is measured against.
+        // Counted up front so every row for this battle carries the same figure.
+        //
+        // Note this counts EVERY tracked guild across EVERY Discord server, because this
+        // table is global game data. Do not test a CTA threshold against it: that is a
+        // per-server question, and the queries behind /stats and /split-cta answer it by
+        // joining back to tracked_albion_guild for the server that asked.
         int guildPlayerCount = (int) battle.players().values().stream()
                 .filter(p -> p.guildId() != null && trackedGuildIds.contains(p.guildId()))
                 .count();

@@ -117,7 +117,9 @@ public class SplitCtaCommand implements SlashCommand {
         String battleId = event.getOption("battle", OptionMapping::getAsString);
 
         if (battleId == null || battleId.isBlank()) {
-            return battles.findLatestCta(context.ctaMinTotalPlayers(), context.ctaMinGuildPlayers())
+            return battles
+                    .findLatestCta(
+                            context.guildId(), context.ctaMinTotalPlayers(), context.ctaMinGuildPlayers())
                     .orElseThrow(() -> new CommandException(
                             "No CTA has been tracked yet, so there is nothing to credit. "
                                     + "Give a battle id, or wait for the poller to pick up a fight "

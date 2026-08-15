@@ -67,7 +67,10 @@ public class StatsCommand implements SlashCommand {
                                 : "%s is not registered.".formatted(subject.getAsMention())));
 
         StatsService.PlayerStats stats = statsService.compute(
-                registration, context.ctaMinTotalPlayers(), context.ctaMinGuildPlayers());
+                registration,
+                context.guildId(),
+                context.ctaMinTotalPlayers(),
+                context.ctaMinGuildPlayers());
 
         EmbedBuilder embed = new EmbedBuilder()
                 .setColor(new Color(0x3498DB))
