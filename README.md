@@ -228,6 +228,18 @@ Either test on its own lets the wrong thing through, which is why both are requi
 same pair drives killboard posts, `/stats` attendance and `/split-cta`, so nothing can
 disagree about what counted.
 
+**Alliance-mates are on our side, but they are not our turnout.** Any guild that fought
+under the same alliance banner as one of yours shows 🟣 on the killboard instead of 🔴,
+counts toward the "Our side" totals, and can never be named as the opponent in the title.
+The `Ours` column above still means your tracked guilds alone: an ally bringing thirty
+does not turn your five into a CTA, and `/split-cta` could not pay them in any case.
+The "Our side" line spells the split out — `14 players (12 us, 2 allied)` — so the figure
+the threshold used stays visible.
+
+Alliance membership is read from the battle itself, not from whatever alliance a guild was
+in when `/guild add` ran, so it is right even after someone changes alliance. Guilds in no
+alliance are nobody's ally.
+
 **CTA attendance is a lower bound.** The Albion API only lists players who scored a
 kill, died, or earned assist fame in a battle. Someone who showed up and contributed
 nothing does not appear.

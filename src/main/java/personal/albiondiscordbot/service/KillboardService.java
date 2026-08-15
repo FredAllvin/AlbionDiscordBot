@@ -70,6 +70,12 @@ public class KillboardService {
             // Both tests must pass. Total size alone would post a handful of us caught
             // in someone else's brawl; our turnout alone would post ten of us ganking
             // three people. A CTA is a big fight that we actually showed up to.
+            //
+            // Our turnout counts tracked guilds only, never allies: the question this
+            // threshold answers is "did enough of OUR people show up to be worth a post
+            // and a /split-cta", and an alliance-mate bringing thirty does not make our
+            // five into a CTA. Allies are folded into the embed's "our side" totals
+            // further down, where the question is what the fight looked like instead.
             Set<String> ourGuildIds = ourGuildIds(discordGuildId);
             if (battle.playerCount() < config.getCtaMinTotalPlayers()
                     || ourPlayerCount(battle, ourGuildIds) < config.getCtaMinGuildPlayers()) {
@@ -87,11 +93,41 @@ public class KillboardService {
         }
     }
 
-    /** How many tracked-guild members fought in this battle. */
+    /** How many tracked-guild members fought in this battle. Never counts allies. */
     static long ourPlayerCount(AlbionBattle battle, Set<String> ourGuildIds) {
         return battle.players().values().stream()
                 .filter(p -> p.guildId() != null && ourGuildIds.contains(p.guildId()))
                 .count();
+    }
+
+    /**
+     * Guilds that fought this battle under the same alliance banner as one of ours.
+     *
+     * <p>Read from the battle rather than from {@code tracked_albion_guild.alliance_id},
+     * which is a snapshot taken when {@code /guild add} ran and goes stale the moment
+     * anyone changes alliance. The battle records who stood with whom that day, which is
+     * the thing being drawn.
+     *
+     * <p>Guilds with no alliance report {@code ""} rather than null — verified against 20
+     * live EU battles on 15 August 2026, e.g. {@code "Dark Legion0"} in battle 413360289.
+     * Matching on blank would file every unallied guild in the fight as an ally of every
+     * other one, so blanks are dropped on both sides.
+     */
+    static Set<String> allyGuildIds(AlbionBattle battle, Set<String> ourGuildIds) {
+        Set<String> ourAlliances = battle.guilds().values().stream()
+                .filter(s -> ourGuildIds.contains(s.id()))
+                .map(AlbionBattle.Side::allianceId)
+                .filter(id -> id != null && !id.isBlank())
+                .collect(Collectors.toSet());
+
+        if (ourAlliances.isEmpty()) {
+            return Set.of();
+        }
+        return battle.guilds().values().stream()
+                .filter(s -> !ourGuildIds.contains(s.id()))
+                .filter(s -> s.allianceId() != null && ourAlliances.contains(s.allianceId()))
+                .map(AlbionBattle.Side::id)
+                .collect(Collectors.toSet());
     }
 
     private Set<String> ourGuildIds(long discordGuildId) {
@@ -126,8 +162,13 @@ public class KillboardService {
                 .sorted(Comparator.comparingLong(AlbionBattle.Side::killFame).reversed())
                 .toList();
 
+        Set<String> allyGuildIds = allyGuildIds(battle, ourGuildIds);
+
+        // Allies are excluded here too, not just coloured differently. The title names the
+        // biggest side that is not us, and without this an alliance-mate who out-famed the
+        // enemy would headline the post as the guild we fought.
         String opponent = sides.stream()
-                .filter(s -> !ourGuildIds.contains(s.id()))
+                .filter(s -> !ourGuildIds.contains(s.id()) && !allyGuildIds.contains(s.id()))
                 .map(AlbionBattle.Side::name)
                 .findFirst()
                 .orElse("unknown");
@@ -141,21 +182,36 @@ public class KillboardService {
                 .setColor(new Color(0xC0392B))
                 .setTimestamp(battle.startTime());
 
+        // "Our side" is the whole friendly force, allies included — that is what the fight
+        // actually looked like from our position. The split is still spelled out below,
+        // because the guild-only figure is the one the CTA threshold and /split-cta work
+        // from, and a reader comparing the post against those needs to see both numbers.
         long ourKills = 0;
         long ourDeaths = 0;
         long ourFame = 0;
         long ourPlayers = 0;
+        long allyPlayers = 0;
         for (AlbionBattle.Participant p : battle.players().values()) {
-            if (p.guildId() != null && ourGuildIds.contains(p.guildId())) {
-                ourKills += p.kills();
-                ourDeaths += p.deaths();
-                ourFame += p.killFame();
+            boolean ours = p.guildId() != null && ourGuildIds.contains(p.guildId());
+            boolean allied = p.guildId() != null && allyGuildIds.contains(p.guildId());
+            if (!ours && !allied) {
+                continue;
+            }
+            ourKills += p.kills();
+            ourDeaths += p.deaths();
+            ourFame += p.killFame();
+            if (ours) {
                 ourPlayers++;
+            } else {
+                allyPlayers++;
             }
         }
 
-        embed.addField("Our side", "%d players\n%d kills / %d deaths\n%s fame"
-                .formatted(ourPlayers, ourKills, ourDeaths, Formatting.compact(ourFame)), true);
+        String roster = allyPlayers == 0
+                ? "%d players".formatted(ourPlayers)
+                : "%d players (%d us, %d allied)".formatted(ourPlayers + allyPlayers, ourPlayers, allyPlayers);
+        embed.addField("Our side", "%s\n%d kills / %d deaths\n%s fame"
+                .formatted(roster, ourKills, ourDeaths, Formatting.compact(ourFame)), true);
         embed.addField("Battle", "%d players\n%d kills\n%s fame"
                 .formatted(battle.playerCount(), battle.totalKills(), Formatting.compact(battle.totalFame())), true);
 
@@ -164,11 +220,14 @@ public class KillboardService {
             embed.addField("Duration", "%dm %ds".formatted(duration.toMinutes(), duration.toSecondsPart()), true);
         }
 
+        // 🟢 us, 🟣 alliance-mates, 🔴 the people we were shooting at.
         String topGuilds = sides.stream()
                 .limit(6)
                 .map(s -> "%s **%s** — %d/%d, %s"
                         .formatted(
-                                ourGuildIds.contains(s.id()) ? "🟢" : "🔴",
+                                ourGuildIds.contains(s.id())
+                                        ? "🟢"
+                                        : allyGuildIds.contains(s.id()) ? "🟣" : "🔴",
                                 Formatting.escapeMarkdown(s.name()),
                                 s.kills(),
                                 s.deaths(),
@@ -178,6 +237,9 @@ public class KillboardService {
             embed.addField("Guilds (kills/deaths, fame)", topGuilds, false);
         }
 
+        // Our guilds only, allies excluded on purpose: this field is recognition for our
+        // own members, and it sits next to a footer pointing at /split-cta, which can only
+        // ever pay people registered with this server.
         String topPlayers = battle.players().values().stream()
                 .filter(p -> p.guildId() != null && ourGuildIds.contains(p.guildId()))
                 .sorted(Comparator.comparingLong(AlbionBattle.Participant::killFame).reversed())
