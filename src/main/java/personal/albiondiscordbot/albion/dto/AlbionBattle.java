@@ -45,12 +45,19 @@ public record AlbionBattle(
     }
 
     /**
-     * Whether the battle has stopped accruing participants. Battles stay open for
-     * roughly 180 seconds after their last kill, and ingesting before then records
-     * partial data.
+     * Whether the battle has stopped accruing participants, according to the API's own
+     * {@code timeout} field. Battles stay open for roughly 180 seconds after their last
+     * kill, and ingesting before then records a partial roster.
+     *
+     * @param fallbackGrace used only when {@code timeout} is absent, in which case the
+     *     battle is treated as closed once this long has passed since its end
      */
-    public boolean isClosed(Instant now) {
-        return timeout != null && timeout.isBefore(now);
+    public boolean isClosed(Instant now, java.time.Duration fallbackGrace) {
+        if (timeout != null) {
+            return timeout.isBefore(now);
+        }
+        // No timeout published: fall back to the configured grace after the last kill.
+        return endTime == null || endTime.isBefore(now.minus(fallbackGrace));
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

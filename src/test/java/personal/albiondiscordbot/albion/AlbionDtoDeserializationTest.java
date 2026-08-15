@@ -114,8 +114,10 @@ class AlbionDtoDeserializationTest {
 
         AlbionBattle battle = battles.get(0);
 
-        assertThat(battle.isClosed(battle.timeout().minusSeconds(1))).isFalse();
-        assertThat(battle.isClosed(battle.timeout().plusSeconds(1))).isTrue();
-        assertThat(battle.isClosed(Instant.now())).isTrue();
+        java.time.Duration grace = java.time.Duration.ofSeconds(200);
+
+        assertThat(battle.isClosed(battle.timeout().minusSeconds(1), grace)).isFalse();
+        assertThat(battle.isClosed(battle.timeout().plusSeconds(1), grace)).isTrue();
+        assertThat(battle.isClosed(Instant.now(), grace)).isTrue();
     }
 }

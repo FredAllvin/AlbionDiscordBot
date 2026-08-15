@@ -96,7 +96,6 @@ public class BattlePoller {
         AlbionProperties.Poller config = properties.poller();
 
         Instant now = Instant.now();
-        Instant youngestAllowed = now.minus(config.finalizeGrace());
         Instant horizon = horizonFor(state, config, now);
 
         int ingested = 0;
@@ -116,8 +115,11 @@ public class BattlePoller {
                 if (battle.startTime() != null && battle.startTime().isBefore(oldestInPage)) {
                     oldestInPage = battle.startTime();
                 }
-                // Still accruing participants — revisit on a later run.
-                if (battle.endTime() != null && battle.endTime().isAfter(youngestAllowed)) {
+                // Still accruing participants — revisit on a later run. Asks the battle's
+                // own `timeout` field rather than re-deriving "closed" from endTime here;
+                // two competing definitions of finalized in one codebase is how they drift
+                // apart. finalizeGrace still applies when the API omits a timeout.
+                if (!battle.isClosed(now, config.finalizeGrace())) {
                     continue;
                 }
                 if (!involvesTrackedGuild(battle, trackedGuildIds)) {
