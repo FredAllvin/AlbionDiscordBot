@@ -147,6 +147,14 @@ public class StatusCommand implements SlashCommand {
                     .append(" consecutive failure(s). If this keeps climbing, check the logs — a 403 "
                             + "usually means Cloudflare rejected the configured user agent.\n");
         }
+        // Answers "the fight ended, where is the killboard post" without a log dive: a
+        // battle keeps accruing kills for ~180s after the last one, and posting before
+        // that would show a partial roster.
+        if (poller.getOldestOpenBattleAt() != null) {
+            summary.append("⏳ A battle from <t:")
+                    .append(poller.getOldestOpenBattleAt().getEpochSecond())
+                    .append(":R> is still running. It posts once the fight finalizes.\n");
+        }
         if (poller.getFirstIngestAt() != null) {
             summary.append("📊 Tracking battles since <t:")
                     .append(poller.getFirstIngestAt().getEpochSecond())

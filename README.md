@@ -201,6 +201,19 @@ disagree about what counted.
 kill, died, or earned assist fame in a battle. Someone who showed up and contributed
 nothing does not appear.
 
+**A killboard post lands a few minutes after the fight, and big fights wait longest.**
+A battle keeps accruing kills until 180 seconds after its last one, and reading it before
+then records a partial roster — wrong embed, wrong attendance, wrong `/split-cta`. So the
+bot waits for the battle's own `timeout`, then posts on its next poll: about 4 minutes
+after a fight ends. The wait is the battle's, not the bot's, and the biggest fights stay
+open longest — the median 100-player battle runs 23.6 minutes from first kill to close.
+
+The poller remembers any battle it is still waiting on (`poller_state.oldest_open_battle_at`)
+and pages back to it however deep it has drifted. Without that it only reached back one
+overlap, which the longest battles outlived — so the fights most worth posting were the
+ones most likely to be missed. If battles ever go missing again, that is the mechanism to
+look at; raising `albion.poller.overlap` is not the fix.
+
 **The Albion API caches hard, and the bot deliberately steps around it.** Player, search
 and battle responses are served from a shared cache — `max-age=600` on players and search,
 `300` on battles — and it overshoots badly: a battle page was measured coming back eight

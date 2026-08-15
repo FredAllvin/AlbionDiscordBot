@@ -30,6 +30,15 @@ import personal.albiondiscordbot.service.KillboardService;
  * <p>Battles younger than the finalize grace period are skipped rather than stored:
  * a battle keeps accruing participants for roughly 180 seconds after its last kill, and
  * ingesting early would record a partial roster and post a wrong killboard embed.
+ *
+ * <p>Deferring a battle is only safe if the next run can still reach it, and the overlap
+ * alone does not guarantee that: the watermark advances on every run, including the ones
+ * that skipped an unfinalized battle, so a battle has to finalize before the overlap
+ * slides past its <em>start</em> time. Big fights lose that race, because a battle stays
+ * open until 180s after its last kill and the big ones are the ones that keep producing
+ * kills. Measured on the live EU list, the median 100-player battle is open for 23.6
+ * minutes — longer than the 22 minutes a routine poll reaches back. So each run records
+ * the oldest battle it deferred, and the next one pages back to that battle explicitly.
  */
 @Component
 @ConditionalOnProperty(value = "albion.poller.enabled", havingValue = "true", matchIfMissing = true)
@@ -101,6 +110,10 @@ public class BattlePoller {
         int ingested = 0;
         int pagesRead = 0;
 
+        // The oldest battle this run defers. Recomputed from scratch rather than merged
+        // with what was stored, so it clears itself the moment nothing is outstanding.
+        Instant oldestOpen = null;
+
         for (int page = 0; page < config.maxPages(); page++) {
             List<AlbionBattle> batch =
                     albion.getBattles("day", AlbionApiClient.MAX_BATTLE_PAGE_SIZE, page * AlbionApiClient.MAX_BATTLE_PAGE_SIZE);
@@ -115,14 +128,22 @@ public class BattlePoller {
                 if (battle.startTime() != null && battle.startTime().isBefore(oldestInPage)) {
                     oldestInPage = battle.startTime();
                 }
+                if (!involvesTrackedGuild(battle, trackedGuildIds)) {
+                    continue;
+                }
                 // Still accruing participants — revisit on a later run. Asks the battle's
                 // own `timeout` field rather than re-deriving "closed" from endTime here;
                 // two competing definitions of finalized in one codebase is how they drift
                 // apart. finalizeGrace still applies when the API omits a timeout.
+                //
+                // Note what is being remembered: the battle's START, not now. That is the
+                // depth the next run has to page to in order to see this battle again,
+                // and for a long fight it is much deeper than the overlap would reach.
                 if (!battle.isClosed(now, config.finalizeGrace())) {
-                    continue;
-                }
-                if (!involvesTrackedGuild(battle, trackedGuildIds)) {
+                    if (battle.startTime() != null
+                            && (oldestOpen == null || battle.startTime().isBefore(oldestOpen))) {
+                        oldestOpen = battle.startTime();
+                    }
                     continue;
                 }
 
@@ -140,6 +161,8 @@ public class BattlePoller {
 
         if (state != null) {
             state.recordSuccess();
+            // Written even when null: that is how a finalized battle releases the floor.
+            state.setOldestOpenBattleAt(oldestOpen);
             if (ingested > 0) {
                 state.markFirstIngestIfAbsent();
             }
@@ -155,8 +178,13 @@ public class BattlePoller {
      * How far back this run should page.
      *
      * <p>Anchored on the last successful poll rather than a fixed window: a routine poll
-     * two minutes after the last one only has to re-check the overlap, while the first
+     * a minute after the last one only has to re-check the overlap, while the first
      * poll after an outage automatically reaches back across the whole gap.
+     *
+     * <p>Then extended to cover any battle the previous run deferred as unfinalized. The
+     * overlap is a fixed guess and a battle's duration is not, so without this the reach
+     * is only accidentally sufficient — and it runs out first for the longest battles,
+     * which are the ones worth posting.
      *
      * <p>Clamped to 24 hours because {@code range=day} cannot see further. Anything
      * older than that is unrecoverable — which is the real cost of extended downtime.
@@ -167,6 +195,14 @@ public class BattlePoller {
                 : state.getLastSuccessAt();
 
         Instant horizon = anchor.minus(config.overlap());
+
+        // The break in runOnce() fires after the page is processed, so a horizon equal to
+        // the battle's start still reads the page holding it.
+        Instant deferred = state == null ? null : state.getOldestOpenBattleAt();
+        if (deferred != null && deferred.isBefore(horizon)) {
+            horizon = deferred;
+        }
+
         Instant apiLimit = now.minus(API_RETENTION);
 
         return horizon.isBefore(apiLimit) ? apiLimit : horizon;

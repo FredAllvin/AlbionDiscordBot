@@ -1,0 +1,14 @@
+-- Remember the oldest battle the poller deferred because it was still accruing kills.
+--
+-- The poller skips battles that have not finalized and revisits them on a later run,
+-- but its watermark advanced anyway, so the only thing keeping a deferred battle
+-- reachable was the fixed overlap racing the battle's own duration. Measured against
+-- the live EU list on 15 August 2026, that race is biased against exactly the fights
+-- this bot exists to post: the median 100-player battle stays open 23.6 minutes, which
+-- is longer than the 22 minutes a routine poll could reach back. Battle 417916301
+-- (91 players, Dumbo Elephants) stayed open 18.6 minutes and left a ~3 minute window
+-- to ever be seen. It lost.
+--
+-- Storing the floor lets the next poll page back to the deferred battle explicitly
+-- instead of hoping the overlap is generous enough, and it survives a restart.
+ALTER TABLE poller_state ADD COLUMN oldest_open_battle_at TIMESTAMPTZ;

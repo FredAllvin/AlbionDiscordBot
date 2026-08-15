@@ -33,6 +33,18 @@ public class PollerState {
     @Column(name = "first_ingest_at")
     private Instant firstIngestAt;
 
+    /**
+     * Start time of the oldest battle the last run deferred because it was still
+     * accruing participants, or null if nothing is outstanding.
+     *
+     * <p>This is what keeps a long fight reachable. The watermark advances every run
+     * including the runs that deliberately skipped an unfinalized battle, so without
+     * this the battle has to finalize before the overlap slides past its start time —
+     * a race that big battles lose, because they are the ones that stay open longest.
+     */
+    @Column(name = "oldest_open_battle_at")
+    private Instant oldestOpenBattleAt;
+
     protected PollerState() {
         // for JPA
     }
@@ -51,6 +63,15 @@ public class PollerState {
     public void recordFailure() {
         this.lastRunAt = Instant.now();
         this.consecutiveFailures++;
+    }
+
+    /**
+     * Records what the run just finished still owes, recomputed from scratch every time.
+     * Pass null when nothing was deferred, which is how the floor clears itself once the
+     * battle finalizes and is ingested.
+     */
+    public void setOldestOpenBattleAt(Instant oldestOpenBattleAt) {
+        this.oldestOpenBattleAt = oldestOpenBattleAt;
     }
 
     public void markFirstIngestIfAbsent() {
@@ -77,5 +98,9 @@ public class PollerState {
 
     public Instant getFirstIngestAt() {
         return firstIngestAt;
+    }
+
+    public Instant getOldestOpenBattleAt() {
+        return oldestOpenBattleAt;
     }
 }
