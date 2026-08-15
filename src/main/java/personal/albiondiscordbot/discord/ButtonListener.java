@@ -66,7 +66,16 @@ public class ButtonListener extends ListenerAdapter {
 
         event.deferEdit().queue();
         String[] args = java.util.Arrays.copyOfRange(parts, 1, parts.length);
-        executor.execute(() -> run(handler, event, args));
+        try {
+            executor.execute(() -> run(handler, event, args));
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            // Never fall back to running this on the gateway thread — see AsyncConfig.
+            log.warn("Button {} rejected — the command pool is saturated", customId);
+            event.getHook()
+                    .sendMessage("The bot is busy right now — give it a moment and click that again.")
+                    .setEphemeral(true)
+                    .queue();
+        }
     }
 
     private void run(ButtonHandler handler, ButtonInteractionEvent event, String[] args) {

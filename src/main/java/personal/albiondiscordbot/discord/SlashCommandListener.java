@@ -1,6 +1,7 @@
 package personal.albiondiscordbot.discord;
 
 import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
 import org.slf4j.Logger;
@@ -58,7 +59,14 @@ public class SlashCommandListener extends ListenerAdapter {
         }
 
         event.deferReply(command.ephemeral()).queue();
-        executor.execute(() -> run(command, event));
+        try {
+            executor.execute(() -> run(command, event));
+        } catch (RejectedExecutionException e) {
+            // The pool is full. Saying so beats the alternative of running the command on
+            // this gateway thread, which would stall every server the bot is in.
+            log.warn("Command /{} rejected — the command pool is saturated", command.name());
+            reply(event, "The bot is busy right now — give it a moment and try that again.");
+        }
     }
 
     private void run(SlashCommand command, SlashCommandInteractionEvent event) {
