@@ -55,7 +55,11 @@ public class RegistrationService {
                         "No Albion character called **%s** exists on the EU server. Check the spelling."
                                 .formatted(characterName)));
 
-        // /players/{id} is authoritative for current guild; search results can lag.
+        // Both /search and /players/{id} are cached identically (max-age=600), so the
+        // second call is not a fresher source in itself — AlbionApiClient bypassing the
+        // cache is what makes it current. Without that bypass this check reported the
+        // guild a member had up to ten minutes ago, which is why /register used to reject
+        // someone who had just joined and then accept them on a retry seconds later.
         AlbionPlayerDetail detail = albion.getPlayer(hit.id())
                 .orElseThrow(() -> new CommandException(
                         "Found **%s** but could not read their profile. Try again in a moment."
@@ -128,13 +132,21 @@ public class RegistrationService {
                     }
                 });
 
-        // Replace any previous claim by this user rather than stacking rows; the
-        // partial unique index would reject a second active registration anyway.
+        // Replace any previous claim by this user rather than stacking rows.
+        //
+        // saveAndFlush, not save: ux_registration_user is a partial unique index over
+        // active rows, and Registration uses IDENTITY ids, so persisting the new row runs
+        // its INSERT immediately while this deactivation would otherwise sit unflushed
+        // until commit. That ordering puts two active rows for the same user in the table
+        // at once and the index rejects the insert, so re-registering — changing your
+        // character, or staff force-registering over an existing link — failed outright.
         registrations
                 .findByDiscordGuildIdAndDiscordUserIdAndActiveTrue(discordGuildId, discordUserId)
                 .ifPresent(previous -> {
-                    previous.deactivate(discordUserId);
-                    registrations.save(previous);
+                    // Staff replacing someone's registration is the actor, not the member;
+                    // recording the member here made a force-register look self-inflicted.
+                    previous.deactivate(forcedByActorId != null ? forcedByActorId : discordUserId);
+                    registrations.saveAndFlush(previous);
                 });
 
         Registration registration =
