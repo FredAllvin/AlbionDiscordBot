@@ -1,12 +1,16 @@
 package personal.albiondiscordbot.service;
 
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import personal.albiondiscordbot.discord.CommandException;
@@ -90,6 +94,83 @@ public class BalanceService {
                         guildId, userId, actorId, TransactionType.REMOVE, -amount, after.getAsLong())
                 .withNote(note));
         return after.getAsLong();
+    }
+
+    /**
+     * Credits the same amount to several members at once — the multi-mention form of
+     * {@code /balance add}. The amount is <strong>per member</strong>, not a total to
+     * divide between them.
+     *
+     * <p>No batch reference, unlike {@link #creditSplit}: a staff adjustment applies
+     * immediately and has no preview to confirm, so there is no token to claim and
+     * nothing for {@code /undo} to find. {@link #removeEach} over the same mentions is
+     * the way back.
+     *
+     * @return each member's resulting balance, keyed by user id
+     */
+    @Transactional
+    public Map<Long, Long> addEach(
+            long guildId, Collection<Long> userIds, long amount, long actorId, String note) {
+        // Ascending user id, for the same reason give() orders its two rows that way: two
+        // officers crediting overlapping groups at the same moment would otherwise each
+        // hold a row the other is waiting for.
+        Set<Long> recipients = new TreeSet<>(userIds);
+        if (recipients.isEmpty()) {
+            throw new CommandException("There is nobody to credit.");
+        }
+
+        Map<Long, Long> after = dao.creditEach(guildId, recipients, amount);
+        after.forEach((userId, balanceAfter) -> ledger.save(
+                new BalanceTransaction(guildId, userId, actorId, TransactionType.ADD, amount, balanceAfter)
+                        .withNote(note)));
+        return after;
+    }
+
+    /**
+     * Debits the same amount from several members at once, per member rather than split
+     * between them.
+     *
+     * <p><strong>All or nothing.</strong> If any one of them cannot cover it, the whole
+     * thing rolls back and the message names who was short. Debiting whoever could afford
+     * it and quietly skipping the rest would leave an officer to reconstruct from the
+     * ledger which half of a correction actually landed.
+     *
+     * @return each member's resulting balance, keyed by user id
+     */
+    @Transactional
+    public Map<Long, Long> removeEach(
+            long guildId, Collection<Long> userIds, long amount, long actorId, String note) {
+        Set<Long> targets = new TreeSet<>(userIds);
+        if (targets.isEmpty()) {
+            throw new CommandException("There is nobody to take silver from.");
+        }
+
+        Map<Long, Long> after = new LinkedHashMap<>();
+        List<Long> overdrawn = new ArrayList<>();
+        for (Long userId : targets) {
+            OptionalLong result = dao.debitIfSufficient(guildId, userId, amount);
+            if (result.isEmpty()) {
+                overdrawn.add(userId);
+                continue;
+            }
+            after.put(userId, result.getAsLong());
+        }
+
+        if (!overdrawn.isEmpty()) {
+            // Throwing takes the successful debits with it: CommandException is a
+            // RuntimeException, so Spring rolls the whole transaction back. The balances
+            // read here are the true ones — nobody in this list was touched.
+            throw new CommandException("That would overdraw %s. Nothing was taken from anyone."
+                    .formatted(overdrawn.stream()
+                            .map(id -> "<@%d> (holds %s)"
+                                    .formatted(id, Formatting.silver(dao.currentAmount(guildId, id))))
+                            .collect(Collectors.joining(", "))));
+        }
+
+        after.forEach((userId, balanceAfter) -> ledger.save(
+                new BalanceTransaction(guildId, userId, actorId, TransactionType.REMOVE, -amount, balanceAfter)
+                        .withNote(note)));
+        return after;
     }
 
     @Transactional

@@ -4,9 +4,11 @@ import java.awt.Color;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.BiConsumer;
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.entities.Member;
@@ -84,8 +86,16 @@ public class BalanceCommand implements SlashCommand {
     @Override
     public SlashCommandData definition() {
         OptionData targetUser = new OptionData(OptionType.USER, "user", "The member", true);
+        // A STRING, not a USER: slash commands cannot declare a variadic user option, so
+        // the mentions are read back out of the text — the same trick /role add uses.
+        OptionData targetMembers = new OptionData(
+                OptionType.STRING, "members", "Mention one or more members, e.g. @a @b @c", true);
         OptionData amount = new OptionData(
                 OptionType.STRING, "amount", "Amount, e.g. 1m, 1.5m, 500k or 1000000", true);
+        // Spelled out because several mentions are now allowed: 3 members at 1m is 3m, not
+        // 1m shared out. /split says the same thing for the same reason.
+        OptionData amountEach = new OptionData(
+                OptionType.STRING, "amount", "Amount PER MEMBER, e.g. 1m, 1.5m, 500k or 1000000", true);
         OptionData reason = new OptionData(OptionType.STRING, "reason", "Why", false);
 
         return Commands.slash("balance", "View and manage silver balances")
@@ -94,10 +104,10 @@ public class BalanceCommand implements SlashCommand {
                         new SubcommandData("check", "Show a balance")
                                 .addOptions(new OptionData(
                                         OptionType.USER, "user", "Whose balance (default yourself)", false)),
-                        new SubcommandData("add", "Give silver to a member (staff)")
-                                .addOptions(targetUser, amount, reason),
-                        new SubcommandData("remove", "Take silver from a member (staff)")
-                                .addOptions(targetUser, amount, reason),
+                        new SubcommandData("add", "Give silver to one or more members (staff)")
+                                .addOptions(targetMembers, amountEach, reason),
+                        new SubcommandData("remove", "Take silver from one or more members (staff)")
+                                .addOptions(targetMembers, amountEach, reason),
                         new SubcommandData("reset", "Set a member's balance to zero (staff)")
                                 .addOptions(targetUser),
                         new SubcommandData("give", "Transfer silver from your own balance")
@@ -150,36 +160,114 @@ public class BalanceCommand implements SlashCommand {
 
     private void add(SlashCommandInteractionEvent event, CommandContext context) {
         permissions.requireStaff(context.member(), context.config());
-        User target = requiredUser(event);
+        List<Member> targets = mentionedMembers(event);
         long amount = SilverAmountParser.parse(event.getOption("amount", OptionMapping::getAsString));
         String reason = event.getOption("reason", OptionMapping::getAsString);
 
-        long after = balances.add(context.guildId(), target.getIdLong(), amount, context.callerId(), reason);
-        auditLog.money(context, "Added **%s** to %s (now %s)%s".formatted(
-                Formatting.silver(amount), target.getAsMention(), Formatting.silver(after),
-                reason == null ? "" : " — " + reason));
+        Map<Long, Long> after =
+                balances.addEach(context.guildId(), ids(targets), amount, context.callerId(), reason);
 
-        event.getHook()
-                .sendMessage("Added **%s** to %s. New balance: **%s**."
-                        .formatted(Formatting.silver(amount), target.getAsMention(), Formatting.silver(after)))
-                .queue();
+        report(event, context, Direction.CREDIT, targets, after, amount, reason);
     }
 
     private void remove(SlashCommandInteractionEvent event, CommandContext context) {
         permissions.requireStaff(context.member(), context.config());
-        User target = requiredUser(event);
+        List<Member> targets = mentionedMembers(event);
         long amount = SilverAmountParser.parse(event.getOption("amount", OptionMapping::getAsString));
         String reason = event.getOption("reason", OptionMapping::getAsString);
 
-        long after = balances.remove(context.guildId(), target.getIdLong(), amount, context.callerId(), reason);
-        auditLog.money(context, "Removed **%s** from %s (now %s)%s".formatted(
-                Formatting.silver(amount), target.getAsMention(), Formatting.silver(after),
-                reason == null ? "" : " — " + reason));
+        Map<Long, Long> after =
+                balances.removeEach(context.guildId(), ids(targets), amount, context.callerId(), reason);
 
-        event.getHook()
-                .sendMessage("Removed **%s** from %s. New balance: **%s**."
-                        .formatted(Formatting.silver(amount), target.getAsMention(), Formatting.silver(after)))
-                .queue();
+        report(event, context, Direction.DEBIT, targets, after, amount, reason);
+    }
+
+    /** Which way the silver went. Add and remove differ only in these three things. */
+    private enum Direction {
+        CREDIT("Added", "to", 0x2ECC71),
+        DEBIT("Removed", "from", 0xE74C3C);
+
+        private final String verb;
+        private final String preposition;
+        private final Color color;
+
+        Direction(String verb, String preposition, int rgb) {
+            this.verb = verb;
+            this.preposition = preposition;
+            this.color = new Color(rgb);
+        }
+    }
+
+    /**
+     * Announces an adjustment, in the log channel and back to the caller.
+     *
+     * <p>One member keeps the old one-line reply — still by far the common case, and an
+     * embed for it would be noise. Several get a list, and the header says <em>each</em>
+     * and prints the total: an officer reading "Added 1,000,000 to 8 members" should not
+     * have to work out whether the guild just went 1m or 8m further into debt.
+     */
+    private void report(
+            SlashCommandInteractionEvent event,
+            CommandContext context,
+            Direction direction,
+            List<Member> targets,
+            Map<Long, Long> after,
+            long amount,
+            String reason) {
+
+        boolean hasReason = reason != null && !reason.isBlank();
+        String suffix = hasReason ? " — " + Formatting.escapeMarkdown(reason) : "";
+
+        if (targets.size() == 1) {
+            Member only = targets.get(0);
+            long balance = after.get(only.getIdLong());
+
+            auditLog.money(context, "%s **%s** %s %s (now %s)%s".formatted(
+                    direction.verb, Formatting.silver(amount), direction.preposition,
+                    only.getAsMention(), Formatting.silver(balance), suffix));
+
+            event.getHook()
+                    .sendMessage("%s **%s** %s %s. New balance: **%s**."
+                            .formatted(
+                                    direction.verb,
+                                    Formatting.silver(amount),
+                                    direction.preposition,
+                                    only.getAsMention(),
+                                    Formatting.silver(balance)))
+                    .queue();
+            return;
+        }
+
+        long total = amount * targets.size();
+        auditLog.money(context, "%s **%s each** %s **%d** members — **%s** in total%s".formatted(
+                direction.verb, Formatting.silver(amount), direction.preposition,
+                targets.size(), Formatting.silver(total), suffix));
+
+        StringBuilder body = new StringBuilder();
+        int listed = 0;
+        for (Member member : targets) {
+            String line = "%s → **%s**\n"
+                    .formatted(member.getAsMention(), Formatting.silver(after.get(member.getIdLong())));
+            // Embed descriptions cap at 4096 characters, and a whole-guild adjustment can
+            // run past that. The title and footer still carry the count and the total.
+            if (body.length() + line.length() > 3900) {
+                body.append("…and %d more.".formatted(targets.size() - listed));
+                break;
+            }
+            body.append(line);
+            listed++;
+        }
+
+        EmbedBuilder embed = new EmbedBuilder()
+                .setTitle("%s %s each %s %d members".formatted(
+                        direction.verb, Formatting.silver(amount), direction.preposition, targets.size()))
+                .setColor(direction.color)
+                .setDescription(body.toString())
+                // Plain text, not markdown: embed footers do not render it.
+                .setFooter("%s total%s".formatted(
+                        Formatting.silver(total), hasReason ? " — " + reason : ""));
+
+        event.getHook().sendMessageEmbeds(embed.build()).queue();
     }
 
     private void reset(SlashCommandInteractionEvent event, CommandContext context) {
@@ -328,5 +416,41 @@ public class BalanceCommand implements SlashCommand {
     private User requiredUser(SlashCommandInteractionEvent event) {
         return Optional.ofNullable(event.getOption("user", OptionMapping::getAsUser))
                 .orElseThrow(() -> new CommandException("You need to pick a member."));
+    }
+
+    /**
+     * Everyone mentioned in the {@code members} option, in the order they were typed.
+     *
+     * <p>Members, not users: a bare user id resolves to someone who is not in this server,
+     * where their balance never shows up in {@code /balance stats} and can never be paid
+     * out — the same reason {@code /balance give} insists on a member.
+     */
+    private List<Member> mentionedMembers(SlashCommandInteractionEvent event) {
+        OptionMapping option = event.getOption("members");
+        if (option == null) {
+            throw new CommandException("You need to mention at least one member.");
+        }
+
+        // A Set: mentioning the same person twice must not pay them twice.
+        Set<Member> members = new LinkedHashSet<>(option.getMentions().getMembers());
+        members.removeIf(m -> m.getUser().isBot());
+
+        if (members.isEmpty()) {
+            if (!option.getMentions().getRoles().isEmpty()) {
+                throw new CommandException(
+                        "That is a role, not a list of members. `/split role:… amount:…` credits "
+                                + "everyone in a role, with a preview first and a batch id `/undo` "
+                                + "can reverse.");
+            }
+            throw new CommandException(
+                    "Mention at least one member of this server, e.g. `@someone @someoneelse`. "
+                            + "Typed-out names do not count — pick each one from the autocomplete so "
+                            + "it becomes a real mention.");
+        }
+        return List.copyOf(members);
+    }
+
+    private static List<Long> ids(List<Member> members) {
+        return members.stream().map(Member::getIdLong).toList();
     }
 }

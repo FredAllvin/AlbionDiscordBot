@@ -99,7 +99,8 @@ Then members can `/register <their character name>`.
 | `/flush-unregistered [confirm] [recheck_guild]` | Staff | Audit verified-role holders. **Dry run unless `confirm: true`** |
 | `/guild add\|remove\|list` | Staff | Which in-game guilds count as yours |
 | `/balance check [@user]` | Everyone / staff | Show a balance |
-| `/balance add\|remove\|reset @user <amount>` | Staff | Adjust a balance |
+| `/balance add\|remove @user… <amount>` | Staff | Adjust one or more balances. The amount is **per member** |
+| `/balance reset @user` | Staff | Set a balance to zero |
 | `/balance give @user <amount>` | Everyone | Transfer your own silver |
 | `/balance history [@user]` | Self / staff | Last 15 changes, with who made them and why |
 | `/balance stats [public]` | Staff | All balances as an HTML attachment |
@@ -144,6 +145,22 @@ A typical run:
 poller recorded in the most recent tracked CTA. Pass a battle id (shown in the footer of
 every killboard post) for an older one. `/role add` + `/split` is still there for splits
 that don't map to a single fight.
+
+**Paying a handful of people** needs no role either. `/balance add` and `/balance remove`
+take as many mentions as you like, and the amount is per member:
+
+```
+/balance add members:@a @b @c amount:1m reason:hg    ← 1,000,000 each, 3,000,000 in total
+```
+
+Type `@` inside the `members` box and pick each name from the autocomplete — a typed-out
+name is just text and will not be counted. Mentioning someone twice still pays them once.
+
+The difference from `/split` is that an adjustment lands immediately: no preview, no batch
+id, so `/undo` has nothing to reverse. `/balance remove` over the same mentions is the way
+back, and it is all-or-nothing — if one of them cannot cover it, nobody is touched and the
+message says who was short. Use `/split` on a role when the group is big enough that you
+want to see the list before it lands.
 
 ### Both ask before they move anything
 
