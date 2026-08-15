@@ -23,12 +23,18 @@ public record AlbionProperties(Api api, Poller poller, String battleUrlTemplate)
         return battleUrlTemplate.formatted(albionBattleId);
     }
 
+    /**
+     * @param bypassCache adds a unique throwaway query parameter to every request, so the
+     *     API's shared cache cannot answer it. See {@code AlbionApiClient} for why this is
+     *     on by default and what breaks without it.
+     */
     public record Api(
             String baseUrl,
             String userAgent,
             Duration minRequestInterval,
             Duration connectTimeout,
-            Duration readTimeout) {
+            Duration readTimeout,
+            boolean bypassCache) {
     }
 
     /**

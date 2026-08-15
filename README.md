@@ -194,6 +194,18 @@ disagree about what counted.
 kill, died, or earned assist fame in a battle. Someone who showed up and contributed
 nothing does not appear.
 
+**The Albion API caches hard, and the bot deliberately steps around it.** Player, search
+and battle responses are served from a shared cache — `max-age=600` on players and search,
+`300` on battles — and it overshoots badly: a battle page was measured coming back eight
+hours stale. Left alone, that made `/register` reject someone who had just joined the
+guild (and accept them on a retry seconds later), and it made the poller believe it had
+paged far enough back when it had not, losing battles permanently.
+
+Every request therefore carries a unique throwaway query parameter, which is the only
+thing that misses the cache — a `Cache-Control: no-cache` request header changes nothing.
+The cost is ~200 ms per call instead of ~18 ms, on a handful of calls a minute. Set
+`albion.api.bypass-cache=false` to turn it off if the API ever objects.
+
 **Stats cannot reach back before the bot's first run.** The battles API retains roughly
 one month and the poller only sees battles while running, so `/stats` reports a
 "tracked since" date rather than implying lifetime coverage.
@@ -354,7 +366,7 @@ gunzip -c albionbot-2026-08-14.sql.gz | docker exec -i albionbot-postgres psql -
 ## Development
 
 ```bash
-./mvnw test          # 128 tests; integration tests start Postgres via Testcontainers
+./mvnw test          # 138 tests; integration tests start Postgres via Testcontainers
 ./mvnw -q compile
 ```
 
@@ -372,6 +384,11 @@ Notable tests:
 - `BattleIngestServiceTest` — re-ingesting a battle cannot inflate anyone's stats.
 - `AlbionDtoDeserializationTest` — runs against captured real API payloads.
 - `DisarrayServiceTest` — every published threshold, including the gaps.
+- `ReRegistrationTest` — changing your character replaces the old link instead of
+  tripping the partial unique index, and staff force-registering over someone is
+  recorded as the officer's action.
+- `AlbionApiClientCacheBypassTest` — every outbound request still carries the parameter
+  that misses the API's cache, since losing it would be silent.
 
 Schema changes go in `src/main/resources/db/migration` as a new `V<n>__*.sql`.
 `ddl-auto` is `validate`; Flyway owns the schema because this database holds silver.
