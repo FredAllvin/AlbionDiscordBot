@@ -84,12 +84,20 @@ class ReRegistrationTest extends PostgresTestBase {
     }
 
     private void apiKnows(String playerId, String name, String albionGuildId) {
-        when(albion.findPlayerByExactName(eq(name)))
-                .thenReturn(Optional.of(new AlbionSearchResponse.PlayerHit(
-                        playerId, name, albionGuildId, "Our Guild", null, null, 10L, 5L)));
-        when(albion.getPlayer(eq(playerId)))
-                .thenReturn(Optional.of(new AlbionPlayerDetail(
-                        playerId, name, albionGuildId, "Our Guild", null, null, 10L, 5L, 2.0, null)));
+        when(albion.findPlayersByExactName(eq(name))).thenReturn(List.of(hit(playerId, name, albionGuildId)));
+        when(albion.findPlayerByExactName(eq(name))).thenReturn(Optional.of(hit(playerId, name, albionGuildId)));
+        when(albion.getPlayer(eq(playerId))).thenReturn(Optional.of(detail(playerId, name, albionGuildId)));
+    }
+
+    private AlbionSearchResponse.PlayerHit hit(String playerId, String name, String albionGuildId) {
+        return new AlbionSearchResponse.PlayerHit(
+                playerId, name, albionGuildId, "Our Guild", null, null, 10L, 5L);
+    }
+
+    private AlbionPlayerDetail detail(String playerId, String name, String albionGuildId) {
+        return new AlbionPlayerDetail(
+                playerId, name, albionGuildId, albionGuildId == null ? "" : "Our Guild",
+                null, null, 10L, 5L, 2.0, null);
     }
 
     private List<Registration> rowsFor(long userId) {
@@ -163,6 +171,61 @@ class ReRegistrationTest extends PostgresTestBase {
                 .get()
                 .extracting(Registration::isVerified)
                 .isEqualTo(false);
+    }
+
+    /**
+     * The real case: "300pingenjoyer" (no guild) and "300PingEnjoyer" (Dumbo Elephants)
+     * are both real characters, and the search endpoint lists the guildless one first.
+     */
+    private void apiKnowsTwoCharactersSharingAName(String typed) {
+        when(albion.findPlayersByExactName(eq(typed)))
+                .thenReturn(List.of(
+                        hit("PLAYER_GUILDLESS", "300pingenjoyer", null),
+                        hit("PLAYER_IN_GUILD", "300PingEnjoyer", OUR_ALBION_GUILD)));
+
+        when(albion.getPlayer(eq("PLAYER_GUILDLESS")))
+                .thenReturn(Optional.of(detail("PLAYER_GUILDLESS", "300pingenjoyer", null)));
+        when(albion.getPlayer(eq("PLAYER_IN_GUILD")))
+                .thenReturn(Optional.of(detail("PLAYER_IN_GUILD", "300PingEnjoyer", OUR_ALBION_GUILD)));
+    }
+
+    @Test
+    @DisplayName("of two characters sharing a name, the one in the guild is registered")
+    void picksTheSameNameCharacterThatIsInTheGuild() {
+        apiKnowsTwoCharactersSharingAName("300pingenjoyer");
+
+        Registration registered = registrations.register(GUILD, MEMBER, "300pingenjoyer");
+
+        // Taking the first hit registered the guildless account, so the member was told
+        // they were not in the guild while standing in it.
+        assertThat(registered.getAlbionPlayerId()).isEqualTo("PLAYER_IN_GUILD");
+        assertThat(registered.getAlbionPlayerName()).isEqualTo("300PingEnjoyer");
+    }
+
+    @Test
+    @DisplayName("force-register also picks the one in the guild, or attendance never matches")
+    void forceRegisterPrefersTheCharacterInTheGuild() {
+        apiKnowsTwoCharactersSharingAName("300pingenjoyer");
+
+        Registration forced = registrations.forceRegister(GUILD, MEMBER, "300pingenjoyer", OFFICER);
+
+        // Attendance and /split-cta key on this id. Linking the guildless character would
+        // have looked fine and quietly paid them nothing forever.
+        assertThat(forced.getAlbionPlayerId()).isEqualTo("PLAYER_IN_GUILD");
+    }
+
+    @Test
+    @DisplayName("when no same-name character is in the guild, the error says all were checked")
+    void reportsThatEverySameNameCharacterWasChecked() {
+        when(albion.findPlayersByExactName(eq("Twins")))
+                .thenReturn(List.of(hit("A", "twins", null), hit("B", "Twins", "SOME_OTHER_GUILD")));
+        when(albion.getPlayer(eq("A"))).thenReturn(Optional.of(detail("A", "twins", null)));
+        when(albion.getPlayer(eq("B"))).thenReturn(Optional.of(detail("B", "Twins", "SOME_OTHER_GUILD")));
+
+        assertThatThrownBy(() -> registrations.register(GUILD, MEMBER, "Twins"))
+                .isInstanceOf(CommandException.class)
+                .hasMessageContaining("2")
+                .hasMessageContaining("none of them");
     }
 
     @Test

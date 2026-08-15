@@ -1,6 +1,7 @@
 package personal.albiondiscordbot.albion;
 
 import java.time.Duration;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -102,19 +103,41 @@ public class AlbionApiClient {
     }
 
     /**
-     * Finds a character by exact name, case-insensitively.
+     * Every character whose name matches exactly, case-insensitively.
      *
-     * <p>The search endpoint matches substrings, so a query for {@code Bob} also
-     * returns {@code Bobby} and {@code BobX}. Returning the first hit would let someone
-     * register a name they did not type, so only an exact match counts.
+     * <p>The search endpoint matches substrings, so a query for {@code Bob} also returns
+     * {@code Bobby} and {@code BobX}. Registering a name the member did not type would be
+     * worse than failing, so only an exact match counts.
+     *
+     * <p>Returns a <strong>list</strong> because Albion treats names differing only by
+     * case as different characters, and both can exist at once. {@code 300pingenjoyer}
+     * and {@code 300PingEnjoyer} are two real accounts; only the second is in Dumbo
+     * Elephants, and search lists the guildless one first. Picking one and hoping meant
+     * {@code /register} reported the guild of a character the member does not play, and
+     * {@code /force-register} would have linked them to it — which attendance keys on, so
+     * {@code /split-cta} would never have paid them.
+     *
+     * <p>A case-sensitive match of what was typed sorts first, so the likeliest candidate
+     * leads for callers that only want one.
+     */
+    public List<AlbionSearchResponse.PlayerHit> findPlayersByExactName(String name) {
+        String typed = name.trim();
+        String wanted = typed.toLowerCase(Locale.ROOT);
+
+        return search(typed).players().stream()
+                .filter(p -> p.name() != null && p.name().toLowerCase(Locale.ROOT).equals(wanted))
+                .sorted(Comparator.comparing(p -> !p.name().equals(typed)))
+                .toList();
+    }
+
+    /**
+     * The single best exact-name match, for callers with no way to disambiguate.
+     *
+     * <p>Prefer {@link #findPlayersByExactName} anywhere the right answer depends on the
+     * character's guild — see the note there about same-name accounts.
      */
     public Optional<AlbionSearchResponse.PlayerHit> findPlayerByExactName(String name) {
-        AlbionSearchResponse response = search(name);
-        String wanted = name.trim().toLowerCase(Locale.ROOT);
-
-        return response.players().stream()
-                .filter(p -> p.name() != null && p.name().toLowerCase(Locale.ROOT).equals(wanted))
-                .findFirst();
+        return findPlayersByExactName(name).stream().findFirst();
     }
 
     /** Finds a guild by exact name, case-insensitively. */

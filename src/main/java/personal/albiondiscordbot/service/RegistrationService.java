@@ -21,6 +21,12 @@ public class RegistrationService {
 
     private static final Logger log = LoggerFactory.getLogger(RegistrationService.class);
 
+    /**
+     * How many same-name characters to check the guild of before giving up. Two is the
+     * realistic case; this only bounds the API calls if a name is ever shared widely.
+     */
+    private static final int MAX_SAME_NAME_CANDIDATES = 5;
+
     private final AlbionApiClient albion;
     private final RegistrationRepository registrations;
     private final TrackedAlbionGuildRepository trackedGuilds;
@@ -50,38 +56,94 @@ public class RegistrationService {
                     "No in-game guild is configured yet. Staff need to run `/guild add <guild name>` first.");
         }
 
-        AlbionSearchResponse.PlayerHit hit = albion.findPlayerByExactName(characterName)
-                .orElseThrow(() -> new CommandException(
-                        "No Albion character called **%s** exists on the EU server. Check the spelling."
-                                .formatted(characterName)));
+        List<AlbionSearchResponse.PlayerHit> candidates = albion.findPlayersByExactName(characterName);
+        if (candidates.isEmpty()) {
+            throw new CommandException(
+                    "No Albion character called **%s** exists on the EU server. Check the spelling."
+                            .formatted(characterName));
+        }
 
-        // Both /search and /players/{id} are cached identically (max-age=600), so the
-        // second call is not a fresher source in itself — AlbionApiClient bypassing the
+        // Names differing only by case are separate characters, and both can exist — so
+        // "is this name in our guild?" is a question about the whole set, not about
+        // whichever one search listed first. Take the one that IS in a tracked guild.
+        //
+        // Both /search and /players/{id} are cached identically (max-age=600), so this
+        // second call is not a fresher source in itself; AlbionApiClient bypassing the
         // cache is what makes it current. Without that bypass this check reported the
         // guild a member had up to ten minutes ago, which is why /register used to reject
         // someone who had just joined and then accept them on a retry seconds later.
-        AlbionPlayerDetail detail = albion.getPlayer(hit.id())
-                .orElseThrow(() -> new CommandException(
-                        "Found **%s** but could not read their profile. Try again in a moment."
-                                .formatted(hit.name())));
+        Resolution resolution = resolve(candidates, tracked);
 
-        boolean inTrackedGuild = detail.guildId() != null
-                && tracked.stream().anyMatch(t -> t.getAlbionGuildId().equals(detail.guildId()));
-
-        if (!inTrackedGuild) {
-            throw new CommandException(
-                    "**%s** is not in %s. They are currently in **%s**."
-                            .formatted(
-                                    detail.name(),
-                                    tracked.size() == 1
-                                            ? "**" + tracked.get(0).getAlbionGuildName() + "**"
-                                            : "any guild this server tracks",
-                                    detail.guildName() == null || detail.guildName().isBlank()
-                                            ? "no guild"
-                                            : detail.guildName()));
+        if (resolution.inTrackedGuild() != null) {
+            AlbionPlayerDetail detail = resolution.inTrackedGuild();
+            return store(
+                    discordGuildId, discordUserId, detail.id(), detail.name(), baselineFrom(detail), null);
         }
+        if (resolution.firstReadable() == null) {
+            throw new CommandException(
+                    "Found **%s** but could not read their profile. Try again in a moment."
+                            .formatted(candidates.get(0).name()));
+        }
+        throw new CommandException(
+                notInGuildMessage(resolution.firstReadable(), tracked, candidates.size()));
+    }
 
-        return store(discordGuildId, discordUserId, detail.id(), detail.name(), baselineFrom(detail), null);
+    /**
+     * @param inTrackedGuild the candidate that belongs to one of this server's guilds,
+     *     null when none of them does
+     * @param firstReadable the first candidate whose profile could be read at all, so a
+     *     failure can say which guild they are really in rather than just "no"
+     */
+    private record Resolution(AlbionPlayerDetail inTrackedGuild, AlbionPlayerDetail firstReadable) {
+    }
+
+    /**
+     * Reads the candidates' profiles in order and stops at the first one in a tracked
+     * guild. Ordinarily one call; more only when characters share a name.
+     */
+    private Resolution resolve(
+            List<AlbionSearchResponse.PlayerHit> candidates, List<TrackedAlbionGuild> tracked) {
+
+        AlbionPlayerDetail firstReadable = null;
+        for (AlbionSearchResponse.PlayerHit candidate : candidates.subList(
+                0, Math.min(candidates.size(), MAX_SAME_NAME_CANDIDATES))) {
+
+            AlbionPlayerDetail detail = albion.getPlayer(candidate.id()).orElse(null);
+            if (detail == null) {
+                continue;
+            }
+            if (firstReadable == null) {
+                firstReadable = detail;
+            }
+            if (detail.guildId() != null
+                    && tracked.stream().anyMatch(t -> t.getAlbionGuildId().equals(detail.guildId()))) {
+                return new Resolution(detail, firstReadable);
+            }
+        }
+        return new Resolution(null, firstReadable);
+    }
+
+    /**
+     * Says which guild they are actually in, and — when several characters share the name
+     * — that all of them were checked, so nobody assumes the bot looked at the wrong one.
+     */
+    private String notInGuildMessage(
+            AlbionPlayerDetail detail, List<TrackedAlbionGuild> tracked, int sameNameCount) {
+
+        String ours = tracked.size() == 1
+                ? "**" + tracked.get(0).getAlbionGuildName() + "**"
+                : "any guild this server tracks";
+        String theirs = detail.guildName() == null || detail.guildName().isBlank()
+                ? "no guild"
+                : detail.guildName();
+
+        if (sameNameCount > 1) {
+            return ("There are **%d** characters called **%s** and none of them is in %s. "
+                            + "If they just joined, give it a minute and try again.")
+                    .formatted(sameNameCount, detail.name(), ours);
+        }
+        return "**%s** is not in %s. They are currently in **%s**."
+                .formatted(detail.name(), ours, theirs);
     }
 
     /** Registers without verifying guild membership. */
@@ -90,26 +152,45 @@ public class RegistrationService {
             long discordGuildId, long discordUserId, String characterName, long actorId) {
 
         // Still try to resolve the real character so ids and stats work where possible.
-        Optional<AlbionSearchResponse.PlayerHit> hit;
+        //
+        // Guild membership is not required here, but it is still the best tie-breaker
+        // when characters share a name: staff naming someone almost always mean the one
+        // in the guild, and linking the other would key their attendance to a character
+        // that never fights with us — so /split-cta would silently never pay them.
+        List<TrackedAlbionGuild> tracked = trackedGuilds.findByDiscordGuildId(discordGuildId);
+
+        List<AlbionSearchResponse.PlayerHit> candidates;
+        Resolution resolution;
         try {
-            hit = albion.findPlayerByExactName(characterName);
+            candidates = albion.findPlayersByExactName(characterName);
+            resolution = resolve(candidates, tracked);
         } catch (RuntimeException e) {
             log.warn("Albion lookup failed during force-register of '{}'", characterName, e);
-            hit = Optional.empty();
+            candidates = List.of();
+            resolution = new Resolution(null, null);
         }
 
-        String playerId = hit.map(AlbionSearchResponse.PlayerHit::id).orElse("UNRESOLVED:" + characterName);
-        String playerName = hit.map(AlbionSearchResponse.PlayerHit::name).orElse(characterName);
+        AlbionPlayerDetail chosen = resolution.inTrackedGuild() != null
+                ? resolution.inTrackedGuild()
+                : resolution.firstReadable();
 
-        FameBaseline baseline = hit.flatMap(h -> {
-                    try {
-                        return albion.getPlayer(h.id());
-                    } catch (RuntimeException e) {
-                        return Optional.empty();
-                    }
-                })
-                .map(this::baselineFrom)
-                .orElseGet(FameBaseline::unavailable);
+        String playerId;
+        String playerName;
+        if (chosen != null) {
+            playerId = chosen.id();
+            playerName = chosen.name();
+        } else if (!candidates.isEmpty()) {
+            // The character exists but its profile would not load; keep the real id so
+            // stats start working on their own once the API answers again.
+            playerId = candidates.get(0).id();
+            playerName = candidates.get(0).name();
+        } else {
+            playerId = "UNRESOLVED:" + characterName;
+            playerName = characterName;
+        }
+
+        FameBaseline baseline =
+                chosen != null ? baselineFrom(chosen) : FameBaseline.unavailable();
 
         return store(discordGuildId, discordUserId, playerId, playerName, baseline, actorId);
     }

@@ -172,6 +172,13 @@ is in a tracked guild. It cannot confirm the Discord user owns it. Impersonation
 handled after the fact with `/unregister`; `registered_by` and `forced` are recorded for
 audit.
 
+**Names differing only by case are different characters.** `300pingenjoyer` and
+`300PingEnjoyer` both exist on EU and only one of them is in the guild — and search lists
+the guildless one first. So `/register` and `/force-register` check every exact-name match
+and take the one that is actually in a tracked guild, rather than whichever came back
+first. This matters beyond the error message: attendance keys on the Albion player id, so
+linking the wrong twin would look fine and then quietly never be paid by `/split-cta`.
+
 **A CTA has to satisfy two conditions at once** — it was a big fight, *and* enough of
 your own were in it:
 
@@ -366,7 +373,7 @@ gunzip -c albionbot-2026-08-14.sql.gz | docker exec -i albionbot-postgres psql -
 ## Development
 
 ```bash
-./mvnw test          # 138 tests; integration tests start Postgres via Testcontainers
+./mvnw test          # 141 tests; integration tests start Postgres via Testcontainers
 ./mvnw -q compile
 ```
 
