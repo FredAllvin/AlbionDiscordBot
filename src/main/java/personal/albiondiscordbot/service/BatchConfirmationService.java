@@ -257,7 +257,13 @@ public class BatchConfirmationService {
                 Button.secondary(BUTTON_PREFIX + ":cp:" + suffix, "📋 Copy list"));
     }
 
-    /** After confirming, only the copy button stays useful. */
+    /**
+     * The copy button on its own, left behind after a confirmed <strong>split</strong>:
+     * the balances it lists still exist, so it still answers "who is owed what now".
+     *
+     * <p>Not used after a cashout — that zeroes every balance in the batch, so the list
+     * would come back empty.
+     */
     public Button copyButtonOnly(String op, String source, String sourceId, long amountEach, long invokerId) {
         return Button.secondary(
                 BUTTON_PREFIX + ":cp:%s:%s:%s:%d:%d".formatted(op, source, sourceId, amountEach, invokerId),

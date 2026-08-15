@@ -173,10 +173,17 @@ public class BatchButtonHandler implements ButtonHandler {
                     .build();
         }
 
+        // A confirmed cashout has zeroed these balances, so the copy list would now print
+        // "Nobody is owed anything" — the button is dead weight exactly where it looks
+        // useful. A split leaves real balances behind, so there it still lists something.
+        List<ActionRow> remaining = BatchConfirmationService.OP_CASHOUT.equals(op)
+                ? List.of()
+                : List.of(ActionRow.of(
+                        batches.copyButtonOnly(op, source, sourceId, amountEach, invokerId)));
+
         event.getHook()
                 .editOriginal(MessageEditData.fromEmbeds(done))
-                .setComponents(ActionRow.of(
-                        batches.copyButtonOnly(op, source, sourceId, amountEach, invokerId)))
+                .setComponents(remaining)
                 .queue();
 
         // The preview is ephemeral, so announce the result where the guild can see it.
