@@ -16,6 +16,7 @@ import personal.albiondiscordbot.domain.TransactionType;
 import personal.albiondiscordbot.repository.BalanceDao;
 import personal.albiondiscordbot.repository.BalanceRepository;
 import personal.albiondiscordbot.repository.BalanceTransactionRepository;
+import personal.albiondiscordbot.repository.BatchClaimDao;
 import personal.albiondiscordbot.util.Formatting;
 
 /**
@@ -30,12 +31,26 @@ public class BalanceService {
     private final BalanceDao dao;
     private final BalanceRepository balances;
     private final BalanceTransactionRepository ledger;
+    private final BatchClaimDao claims;
 
     public BalanceService(
-            BalanceDao dao, BalanceRepository balances, BalanceTransactionRepository ledger) {
+            BalanceDao dao,
+            BalanceRepository balances,
+            BalanceTransactionRepository ledger,
+            BatchClaimDao claims) {
         this.dao = dao;
         this.balances = balances;
         this.ledger = ledger;
+        this.claims = claims;
+    }
+
+    /** Refused a second time, so one confirmation cannot move silver twice. */
+    private void claimOrThrow(String claimToken, long guildId, String batchId) {
+        if (!claims.claim(claimToken, guildId, batchId)) {
+            throw new CommandException(
+                    "That confirmation has already been used. Nothing was moved a second time — "
+                            + "run the command again if you meant to repeat it.");
+        }
     }
 
     @Transactional(readOnly = true)
@@ -140,11 +155,19 @@ public class BalanceService {
      * the ledger. This is per person, not a total to divide, so 15 members at 1,000,000
      * adds 15,000,000 to what the guild owes.
      *
+     * @param claimToken identifies the confirmation being acted on, so the same one cannot
+     *     credit twice. Minted per preview rather than derived from the amount and
+     *     recipients, so deliberately repeating a split is still allowed.
      * @return each recipient's resulting balance
      */
     @Transactional
     public SplitResult creditSplit(
-            long guildId, Set<Long> userIds, long amountEach, long actorId, String sourceLabel) {
+            long guildId,
+            Set<Long> userIds,
+            long amountEach,
+            long actorId,
+            String sourceLabel,
+            String claimToken) {
         // A Set already, but copy defensively: duplicates here would silently pay someone twice.
         Set<Long> recipients = new LinkedHashSet<>(userIds);
         if (recipients.isEmpty()) {
@@ -152,6 +175,9 @@ public class BalanceService {
         }
 
         String batchId = UUID.randomUUID().toString();
+        // Before any money moves: a refused claim must leave the balances untouched.
+        claimOrThrow(claimToken, guildId, batchId);
+
         Map<Long, Long> after = dao.creditEach(guildId, recipients, amountEach);
 
         after.forEach((userId, balanceAfter) -> ledger.save(
@@ -173,13 +199,18 @@ public class BalanceService {
      * over, and a negative balance is a debt that a cashout must not quietly erase.
      */
     @Transactional
-    public CashoutResult cashOut(long guildId, Set<Long> userIds, long actorId, String sourceLabel) {
+    public CashoutResult cashOut(
+            long guildId, Set<Long> userIds, long actorId, String sourceLabel, String claimToken) {
         Set<Long> candidates = new LinkedHashSet<>(userIds);
         if (candidates.isEmpty()) {
             throw new CommandException("There is nobody to cash out.");
         }
 
         String batchId = UUID.randomUUID().toString();
+        // A second confirmation would find the balances already zeroed and report that
+        // nobody is owed anything, which reads like a bug rather than a duplicate click.
+        claimOrThrow(claimToken, guildId, batchId);
+
         Map<Long, Long> paid = new java.util.LinkedHashMap<>();
         List<Long> skipped = new ArrayList<>();
         long total = 0;
@@ -221,6 +252,18 @@ public class BalanceService {
      */
     @Transactional
     public UndoResult undoBatch(long guildId, String batchId, long actorId) {
+        // Lock the batch's rows before reading them. The "already reversed" check below is
+        // a read followed by a write, and under READ COMMITTED a second /undo running at
+        // the same moment cannot see the first one's uncommitted reversals — so without
+        // this every concurrent caller passed the check and applied a full reversal.
+        // Measured before the lock: eight simultaneous calls, eight reversals, none
+        // refused, a member taken from 1,000,000 to -7,000,000.
+        //
+        // Taking the lock first makes the second caller wait, and its check then runs in a
+        // new statement snapshot that does see the committed reversals. ux_reversal_once
+        // enforces the same rule in the database, so this can only ever fail loudly.
+        dao.lockBatch(batchId);
+
         List<BalanceTransaction> batch = ledger.findByReference(batchId).stream()
                 .filter(t -> t.getDiscordGuildId() == guildId)
                 .toList();

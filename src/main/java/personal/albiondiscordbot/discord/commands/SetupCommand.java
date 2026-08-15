@@ -1,6 +1,8 @@
 package personal.albiondiscordbot.discord.commands;
 
 import java.awt.Color;
+import java.util.ArrayList;
+import java.util.List;
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.Permission;
 import net.dv8tion.jda.api.entities.Role;
@@ -17,6 +19,7 @@ import net.dv8tion.jda.api.interactions.commands.build.SlashCommandData;
 import net.dv8tion.jda.api.interactions.commands.DefaultMemberPermissions;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
+import personal.albiondiscordbot.discord.AuditLogService;
 import personal.albiondiscordbot.discord.CommandContext;
 import personal.albiondiscordbot.discord.CommandException;
 import personal.albiondiscordbot.discord.CommandRegistrar;
@@ -31,6 +34,7 @@ public class SetupCommand implements SlashCommand {
 
     private final GuildConfigService guildConfigService;
     private final PermissionService permissionService;
+    private final AuditLogService auditLog;
 
     /**
      * Resolved lazily to break a cycle: the registrar depends on the registry, which
@@ -42,10 +46,45 @@ public class SetupCommand implements SlashCommand {
     public SetupCommand(
             GuildConfigService guildConfigService,
             PermissionService permissionService,
+            AuditLogService auditLog,
             ObjectProvider<CommandRegistrar> registrarProvider) {
         this.guildConfigService = guildConfigService;
         this.permissionService = permissionService;
+        this.auditLog = auditLog;
         this.registrarProvider = registrarProvider;
+    }
+
+    /** Names only what this run actually changed, so the log reads as a diff. */
+    private static String describeChanges(
+            Role staffRole,
+            Role verifiedRole,
+            TextChannel logChannel,
+            TextChannel killboardChannel,
+            Integer ctaMinTotal,
+            Integer ctaMinGuild) {
+
+        List<String> changes = new ArrayList<>();
+        if (staffRole != null) {
+            changes.add("staff role → " + staffRole.getAsMention());
+        }
+        if (verifiedRole != null) {
+            changes.add("verified role → " + verifiedRole.getAsMention());
+        }
+        if (logChannel != null) {
+            changes.add("log channel → " + logChannel.getAsMention());
+        }
+        if (killboardChannel != null) {
+            changes.add("killboard channel → " + killboardChannel.getAsMention());
+        }
+        if (ctaMinTotal != null) {
+            changes.add("CTA minimum total players → " + ctaMinTotal);
+        }
+        if (ctaMinGuild != null) {
+            changes.add("CTA minimum of our own → " + ctaMinGuild);
+        }
+        return changes.isEmpty()
+                ? "Ran `/setup` without changing any setting."
+                : "Ran `/setup`:\n• " + String.join("\n• ", changes);
     }
 
     @Override
@@ -138,6 +177,11 @@ public class SetupCommand implements SlashCommand {
         }
         config.setSetupCompleted(true);
         guildConfigService.save(config);
+
+        // Logged against the freshly saved config, not the one the command started with,
+        // so setting the log channel and reporting that fact can happen in one run.
+        auditLog.configuration(context, config, describeChanges(
+                staffRole, verifiedRole, logChannel, killboardChannel, ctaMinTotal, ctaMinGuild));
 
         registrarProvider.getObject().register(context.guild());
 

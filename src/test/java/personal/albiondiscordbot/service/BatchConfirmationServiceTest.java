@@ -47,6 +47,11 @@ class BatchConfirmationServiceTest extends PostgresTestBase {
 
     private List<Recipient> recipients;
 
+    /** One token stands for one click on one preview. */
+    private static String freshClaim() {
+        return java.util.UUID.randomUUID().toString();
+    }
+
     @BeforeEach
     void reset() {
         ledger.deleteAll();
@@ -91,7 +96,7 @@ class BatchConfirmationServiceTest extends PostgresTestBase {
     @DisplayName("executing a split credits the flat amount to each recipient")
     void executeCreditsEach() {
         BalanceService.SplitResult result =
-                batches.executeSplit(GUILD, recipients, 1_000_000L, OFFICER, "@payout15");
+                batches.executeSplit(GUILD, recipients, 1_000_000L, OFFICER, "@payout15", freshClaim());
 
         assertThat(result.recipientCount()).isEqualTo(3);
         assertThat(result.totalCredited()).isEqualTo(3_000_000L);
@@ -102,11 +107,11 @@ class BatchConfirmationServiceTest extends PostgresTestBase {
     @Test
     @DisplayName("a cashout clears balances and records what was handed over")
     void cashoutClearsBalances() {
-        batches.executeSplit(GUILD, recipients, 1_000_000L, OFFICER, "@payout15");
+        batches.executeSplit(GUILD, recipients, 1_000_000L, OFFICER, "@payout15", freshClaim());
         balances.add(GUILD, 10L, 500_000L, OFFICER, "earlier split");
 
         BalanceService.CashoutResult result =
-                batches.executeCashout(GUILD, recipients, OFFICER, "@payout15");
+                batches.executeCashout(GUILD, recipients, OFFICER, "@payout15", freshClaim());
 
         assertThat(result.paidCount()).isEqualTo(3);
         assertThat(result.totalPaid()).isEqualTo(3_500_000L);
@@ -123,7 +128,7 @@ class BatchConfirmationServiceTest extends PostgresTestBase {
         balances.add(GUILD, 10L, 1_000_000L, OFFICER, null);
 
         BalanceService.CashoutResult result =
-                batches.executeCashout(GUILD, recipients, OFFICER, "@payout15");
+                batches.executeCashout(GUILD, recipients, OFFICER, "@payout15", freshClaim());
 
         assertThat(result.paidCount()).isEqualTo(1);
         assertThat(result.skipped()).containsExactlyInAnyOrder(11L, 12L);
@@ -134,7 +139,7 @@ class BatchConfirmationServiceTest extends PostgresTestBase {
     @DisplayName("the whole ZvZ flow: split into a role, extra silver, then cash one person out")
     void endToEndSingleMemberCashout() {
         // 1. ZvZ happens, everyone in the role gets a split
-        batches.executeSplit(GUILD, recipients, 6_000_000L, OFFICER, "@zvz-2026-08-14");
+        batches.executeSplit(GUILD, recipients, 6_000_000L, OFFICER, "@zvz-2026-08-14", freshClaim());
         // 2. that member picks up silver from elsewhere too
         balances.add(GUILD, 10L, 4_000_000L, OFFICER, "hellgate loot");
 
@@ -145,7 +150,7 @@ class BatchConfirmationServiceTest extends PostgresTestBase {
         assertThat(batches.totalOwed(GUILD, justThem)).isEqualTo(10_000_000L);
 
         BalanceService.CashoutResult result =
-                batches.executeCashout(GUILD, justThem, OFFICER, "<@10>");
+                batches.executeCashout(GUILD, justThem, OFFICER, "<@10>", freshClaim());
 
         assertThat(result.paidCount()).isEqualTo(1);
         assertThat(result.totalPaid()).isEqualTo(10_000_000L);
@@ -167,7 +172,7 @@ class BatchConfirmationServiceTest extends PostgresTestBase {
     void debtIsNotOwed() {
         // The way someone actually ends up in debt: a split they spent, then reversed.
         BalanceService.SplitResult split =
-                batches.executeSplit(GUILD, recipients, 1_000_000L, OFFICER, "@zvz");
+                batches.executeSplit(GUILD, recipients, 1_000_000L, OFFICER, "@zvz", freshClaim());
         balances.remove(GUILD, 10L, 1_000_000L, OFFICER, "spent it");
         balances.undoBatch(GUILD, split.batchId(), OFFICER);
 
@@ -194,7 +199,7 @@ class BatchConfirmationServiceTest extends PostgresTestBase {
     @DisplayName("the copy list gives character name and full balance owed, not one split's share")
     void copyListUsesFullBalance() {
         balances.add(GUILD, 10L, 500_000L, OFFICER, "earlier split");
-        batches.executeSplit(GUILD, recipients, 1_000_000L, OFFICER, "@payout15");
+        batches.executeSplit(GUILD, recipients, 1_000_000L, OFFICER, "@payout15", freshClaim());
 
         String list = batches.copyList(GUILD, recipients);
 
@@ -246,16 +251,37 @@ class BatchConfirmationServiceTest extends PostgresTestBase {
                 BatchConfirmationService.OP_SPLIT, BatchConfirmationService.SOURCE_ROLE, "123", 1_000L, 456L);
 
         assertThat(split).extracting(Button::getCustomId)
-                .containsExactly(
-                        "bt:ok:split:r:123:1000:456",
-                        "bt:no:split:r:123:1000:456",
-                        "bt:cp:split:r:123:1000:456");
+                .allSatisfy(id -> assertThat(id).matches("bt:(ok|no|cp):split:r:123:1000:456:[0-9a-z]+"));
 
         // A cashout always clears the whole balance, so it encodes no amount.
         List<Button> cashout = batches.buttons(
                 BatchConfirmationService.OP_CASHOUT, BatchConfirmationService.SOURCE_ROLE, "123", 0L, 456L);
 
-        assertThat(cashout.get(0).getCustomId()).isEqualTo("bt:ok:cash:r:123:0:456");
+        assertThat(cashout.get(0).getCustomId()).matches("bt:ok:cash:r:123:0:456:[0-9a-z]+");
         assertThat(cashout.get(0).getLabel()).isEqualTo("Sent — clear balances");
+    }
+
+    @Test
+    @DisplayName("one preview shares one claim token; a new preview gets a new one")
+    void claimTokenIsPerPreview() {
+        List<Button> preview = batches.buttons(
+                BatchConfirmationService.OP_SPLIT, BatchConfirmationService.SOURCE_ROLE, "123", 1_000L, 456L);
+
+        // Deny and Copy claim nothing, but they carry the same token so every button in a
+        // preview parses through one code path.
+        assertThat(preview).extracting(BatchConfirmationServiceTest::claimTokenOf)
+                .containsOnly(claimTokenOf(preview.get(0)));
+
+        List<Button> later = batches.buttons(
+                BatchConfirmationService.OP_SPLIT, BatchConfirmationService.SOURCE_ROLE, "123", 1_000L, 456L);
+
+        // Identical arguments, different confirmation: running the same split twice on
+        // purpose has to stay possible, so the token cannot be derived from them.
+        assertThat(claimTokenOf(later.get(0))).isNotEqualTo(claimTokenOf(preview.get(0)));
+    }
+
+    private static String claimTokenOf(Button button) {
+        String[] parts = button.getCustomId().split(":");
+        return parts[parts.length - 1];
     }
 }

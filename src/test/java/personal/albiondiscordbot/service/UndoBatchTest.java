@@ -47,6 +47,11 @@ class UndoBatchTest extends PostgresTestBase {
 
     private Set<Long> members;
 
+    /** One token stands for one click on one preview. */
+    private static String freshClaim() {
+        return java.util.UUID.randomUUID().toString();
+    }
+
     @BeforeEach
     void reset() {
         ledger.deleteAll();
@@ -63,7 +68,7 @@ class UndoBatchTest extends PostgresTestBase {
         balances.add(GUILD, 10L, 5_000_000L, OFFICER, "pre-existing");
         long totalBefore = balances.totalSilver(GUILD);
 
-        BalanceService.SplitResult split = balances.creditSplit(GUILD, members, 1_000_000L, OFFICER, "cta");
+        BalanceService.SplitResult split = balances.creditSplit(GUILD, members, 1_000_000L, OFFICER, "cta", freshClaim());
         assertThat(balances.totalSilver(GUILD)).isEqualTo(totalBefore + 3_000_000L);
 
         BalanceService.UndoResult undo = balances.undoBatch(GUILD, split.batchId(), OFFICER);
@@ -79,7 +84,7 @@ class UndoBatchTest extends PostgresTestBase {
     @Test
     @DisplayName("a split can only be reversed once")
     void undoIsNotRepeatable() {
-        BalanceService.SplitResult split = balances.creditSplit(GUILD, members, 1_000_000L, OFFICER, "cta");
+        BalanceService.SplitResult split = balances.creditSplit(GUILD, members, 1_000_000L, OFFICER, "cta", freshClaim());
         balances.undoBatch(GUILD, split.batchId(), OFFICER);
 
         // Without this guard a second undo would debit everyone all over again.
@@ -93,7 +98,7 @@ class UndoBatchTest extends PostgresTestBase {
     @Test
     @DisplayName("someone who already spent it goes negative rather than under-reversing")
     void spentSilverGoesNegative() {
-        BalanceService.SplitResult split = balances.creditSplit(GUILD, members, 1_000_000L, OFFICER, "cta");
+        BalanceService.SplitResult split = balances.creditSplit(GUILD, members, 1_000_000L, OFFICER, "cta", freshClaim());
         // member 10 spends most of the erroneous split before anyone notices
         balances.remove(GUILD, 10L, 900_000L, OFFICER, "spent it");
 
@@ -117,7 +122,7 @@ class UndoBatchTest extends PostgresTestBase {
     @Test
     @DisplayName("one server cannot reverse another server's batch")
     void cannotReverseAnotherGuildsBatch() {
-        BalanceService.SplitResult split = balances.creditSplit(GUILD, members, 1_000_000L, OFFICER, "cta");
+        BalanceService.SplitResult split = balances.creditSplit(GUILD, members, 1_000_000L, OFFICER, "cta", freshClaim());
 
         assertThatThrownBy(() -> balances.undoBatch(OTHER_GUILD, split.batchId(), OFFICER))
                 .isInstanceOf(CommandException.class)
@@ -129,8 +134,8 @@ class UndoBatchTest extends PostgresTestBase {
     @Test
     @DisplayName("reversing a cashout puts the silver back on the books")
     void undoCashoutRestoresBalances() {
-        balances.creditSplit(GUILD, members, 1_000_000L, OFFICER, "cta");
-        BalanceService.CashoutResult cashout = balances.cashOut(GUILD, members, OFFICER, "@payout15");
+        balances.creditSplit(GUILD, members, 1_000_000L, OFFICER, "cta", freshClaim());
+        BalanceService.CashoutResult cashout = balances.cashOut(GUILD, members, OFFICER, "@payout15", freshClaim());
 
         assertThat(balances.totalSilver(GUILD)).isZero();
 
@@ -148,8 +153,8 @@ class UndoBatchTest extends PostgresTestBase {
     @Test
     @DisplayName("a cashout can only be reversed once")
     void undoCashoutIsNotRepeatable() {
-        balances.creditSplit(GUILD, members, 1_000_000L, OFFICER, "cta");
-        BalanceService.CashoutResult cashout = balances.cashOut(GUILD, members, OFFICER, "@payout15");
+        balances.creditSplit(GUILD, members, 1_000_000L, OFFICER, "cta", freshClaim());
+        BalanceService.CashoutResult cashout = balances.cashOut(GUILD, members, OFFICER, "@payout15", freshClaim());
         balances.undoBatch(GUILD, cashout.batchId(), OFFICER);
 
         assertThatThrownBy(() -> balances.undoBatch(GUILD, cashout.batchId(), OFFICER))
@@ -162,7 +167,7 @@ class UndoBatchTest extends PostgresTestBase {
     @Test
     @DisplayName("the reversal is written to the ledger against the original batch")
     void undoIsAudited() {
-        BalanceService.SplitResult split = balances.creditSplit(GUILD, members, 1_000_000L, OFFICER, "cta");
+        BalanceService.SplitResult split = balances.creditSplit(GUILD, members, 1_000_000L, OFFICER, "cta", freshClaim());
         balances.undoBatch(GUILD, split.batchId(), OFFICER);
 
         var entries = ledger.findByReference(split.batchId());

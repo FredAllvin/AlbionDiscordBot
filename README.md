@@ -167,10 +167,24 @@ quietly returning less than it took.
 
 ## How things work, and what they do not mean
 
+**Confirming is single-use.** Each preview carries its own token, and applying the batch
+claims it in the same database transaction as the silver. Clicking Confirm twice — a
+laggy click, an impatient double-tap — credits once and tells you the second press did
+nothing. Running the same split again on purpose still works: it is a new preview, so a
+new token. A preview left open across a bot update stops working and says so.
+
 **Registration is not proof of identity.** `/register` confirms a character exists and
-is in a tracked guild. It cannot confirm the Discord user owns it. Impersonation is
-handled after the fact with `/unregister`; `registered_by` and `forced` are recorded for
-audit.
+is in a tracked guild. It cannot confirm the Discord user owns it — Albion exposes
+nothing a bot could use as an ownership challenge. The first claim on a name wins, so the
+exposure is someone claiming a guildmate's character before they do, which would redirect
+their `/split-cta` share. Every registration is announced in the log channel for exactly
+this reason, and `/unregister` is the remedy; `registered_by` and `forced` are recorded
+for audit.
+
+**The log channel covers more than balances.** Anything that decides where silver ends up
+goes there: balance changes and cashouts, but also registrations, `/guild add|remove`, and
+`/setup`. Those last three never move silver themselves — they decide who counts as staff,
+which in-game guild is ours, and who a payout routes to, which comes to the same thing.
 
 **Names differing only by case are different characters.** `300pingenjoyer` and
 `300PingEnjoyer` both exist on EU and only one of them is in the guild — and search lists

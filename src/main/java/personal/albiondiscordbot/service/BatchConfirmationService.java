@@ -243,11 +243,18 @@ public class BatchConfirmationService {
     /**
      * All state is in the ids, so these buttons keep working after a restart and nothing
      * needs to be held in memory or expired.
+     *
+     * <p>The trailing segment is a token minted per preview. It is what the database
+     * claims when the batch is applied, which is what stops a double-click crediting the
+     * whole role twice. Deliberately <em>not</em> derived from the amount and recipients:
+     * running the same split twice on purpose has to keep working, so it is only the same
+     * preview that cannot be confirmed twice.
      */
     public List<Button> buttons(
             String op, String source, String sourceId, long amountEach, long invokerId) {
 
-        String suffix = "%s:%s:%s:%d:%d".formatted(op, source, sourceId, amountEach, invokerId);
+        String suffix = "%s:%s:%s:%d:%d:%s"
+                .formatted(op, source, sourceId, amountEach, invokerId, newClaimToken());
         boolean cashout = OP_CASHOUT.equals(op);
         return List.of(
                 cashout
@@ -258,6 +265,16 @@ public class BatchConfirmationService {
     }
 
     /**
+     * Short on purpose: Discord caps custom ids at 100 characters and the rest of the id
+     * already spends most of that on two snowflake ids. 64 bits of randomness in 13
+     * base-36 characters is far beyond what a collision would need, and a collision only
+     * costs a refused click.
+     */
+    private static String newClaimToken() {
+        return Long.toUnsignedString(java.util.concurrent.ThreadLocalRandom.current().nextLong(), 36);
+    }
+
+    /**
      * The copy button on its own, left behind after a confirmed <strong>split</strong>:
      * the balances it lists still exist, so it still answers "who is owed what now".
      *
@@ -265,23 +282,36 @@ public class BatchConfirmationService {
      * would come back empty.
      */
     public Button copyButtonOnly(String op, String source, String sourceId, long amountEach, long invokerId) {
+        // Its own fresh token. Copy moves no silver so it never claims one, but the id
+        // shape has to stay identical or the handler cannot parse it.
         return Button.secondary(
-                BUTTON_PREFIX + ":cp:%s:%s:%s:%d:%d".formatted(op, source, sourceId, amountEach, invokerId),
+                BUTTON_PREFIX + ":cp:%s:%s:%s:%d:%d:%s"
+                        .formatted(op, source, sourceId, amountEach, invokerId, newClaimToken()),
                 "📋 Copy list");
     }
 
     // ---------------------------------------------------------------- executing
 
     public BalanceService.SplitResult executeSplit(
-            long discordGuildId, List<Recipient> recipients, long amountEach, long actorId, String sourceLabel) {
+            long discordGuildId,
+            List<Recipient> recipients,
+            long amountEach,
+            long actorId,
+            String sourceLabel,
+            String claimToken) {
 
-        return balances.creditSplit(discordGuildId, ids(recipients), amountEach, actorId, sourceLabel);
+        return balances.creditSplit(
+                discordGuildId, ids(recipients), amountEach, actorId, sourceLabel, claimToken);
     }
 
     public BalanceService.CashoutResult executeCashout(
-            long discordGuildId, List<Recipient> recipients, long actorId, String sourceLabel) {
+            long discordGuildId,
+            List<Recipient> recipients,
+            long actorId,
+            String sourceLabel,
+            String claimToken) {
 
-        return balances.cashOut(discordGuildId, ids(recipients), actorId, sourceLabel);
+        return balances.cashOut(discordGuildId, ids(recipients), actorId, sourceLabel, claimToken);
     }
 
     private Set<Long> ids(List<Recipient> recipients) {
@@ -305,7 +335,7 @@ public class BatchConfirmationService {
                 continue;
             }
             total += balance;
-            out.append(recipient.label()).append('\t').append(balance).append('\n');
+            out.append(fenceSafe(recipient.label())).append('\t').append(balance).append('\n');
         }
         if (total == 0) {
             return "Nobody is owed anything.";
@@ -314,10 +344,21 @@ public class BatchConfirmationService {
         return out.toString();
     }
 
+    /**
+     * These tables sit inside a code fence, so the escaping that suits an embed field is
+     * the wrong tool — backticks are what break out of a fence, and a Discord display name
+     * may contain them. Stripped rather than escaped: a backslash would show up literally
+     * in a block an officer reads amounts off.
+     */
     private String trim(String value, int max) {
+        String safe = fenceSafe(value);
+        return safe.length() <= max ? safe : safe.substring(0, max - 1) + "…";
+    }
+
+    private static String fenceSafe(String value) {
         if (value == null) {
             return "";
         }
-        return value.length() <= max ? value : value.substring(0, max - 1) + "…";
+        return value.replace("`", "").replace("\n", " ").replace("\r", " ");
     }
 }

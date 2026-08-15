@@ -4,6 +4,7 @@ import java.awt.Color;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Collectors;
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.entities.Member;
 import net.dv8tion.jda.api.entities.Role;
@@ -24,6 +25,7 @@ import personal.albiondiscordbot.domain.Registration;
 import personal.albiondiscordbot.domain.TrackedAlbionGuild;
 import personal.albiondiscordbot.repository.TrackedAlbionGuildRepository;
 import personal.albiondiscordbot.service.RegistrationService;
+import personal.albiondiscordbot.util.Formatting;
 
 /**
  * {@code /flush-unregistered} — audits everyone holding the verified role.
@@ -184,8 +186,13 @@ public class FlushUnregisteredCommand implements SlashCommand {
         event.getHook().sendMessageEmbeds(embed.build()).queue();
     }
 
+    /**
+     * Display names are user-controlled and this lands in an embed, so they get the same
+     * markdown escaping character names already get — otherwise one member choosing a
+     * name full of asterisks reformats the list an officer is reading.
+     */
     private String truncate(List<String> names) {
-        String joined = String.join(", ", names);
+        String joined = names.stream().map(Formatting::escapeMarkdown).collect(Collectors.joining(", "));
         return joined.length() <= 1000 ? joined : joined.substring(0, 1000) + "…";
     }
 }

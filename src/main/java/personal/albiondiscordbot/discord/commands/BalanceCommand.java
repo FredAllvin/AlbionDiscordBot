@@ -197,13 +197,21 @@ public class BalanceCommand implements SlashCommand {
     }
 
     private void give(SlashCommandInteractionEvent event, CommandContext context) {
-        User target = requiredUser(event);
+        // A member, not a user: resolving a bare user let silver be pushed onto an account
+        // that is not in this server, where the roster and /balance stats never show it.
+        Member target = Optional.ofNullable(event.getOption("user", OptionMapping::getAsMember))
+                .orElseThrow(() -> new CommandException("Pick someone who is in this server."));
         long amount = SilverAmountParser.parse(event.getOption("amount", OptionMapping::getAsString));
 
-        if (target.isBot()) {
+        if (target.getUser().isBot()) {
             throw new CommandException("You cannot give silver to a bot.");
         }
         balances.give(context.guildId(), context.callerId(), target.getIdLong(), amount);
+
+        // The only balance movement a non-staff member can start, so it is the one the log
+        // channel most needs — the others are all staff actions with a staff witness.
+        auditLog.money(context, "%s sent **%s** to %s".formatted(
+                context.member().getAsMention(), Formatting.silver(amount), target.getAsMention()));
 
         event.getHook()
                 .sendMessage("Sent **%s** to %s. You now have **%s**."

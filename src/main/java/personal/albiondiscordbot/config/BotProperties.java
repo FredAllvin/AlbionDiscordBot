@@ -12,4 +12,14 @@ import org.springframework.validation.annotation.Validated;
 @Validated
 @ConfigurationProperties(prefix = "bot")
 public record BotProperties(@NotBlank String token) {
+
+    /**
+     * Masked. A record's generated {@code toString} prints every component, so anything
+     * that logs this object — a binding failure, a debug dump, a future call site that
+     * looks harmless — would put a live bot token in the logs.
+     */
+    @Override
+    public String toString() {
+        return "BotProperties[token=****]";
+    }
 }

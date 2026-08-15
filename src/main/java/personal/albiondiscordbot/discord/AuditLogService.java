@@ -21,7 +21,21 @@ public class AuditLogService {
     private static final Logger log = LoggerFactory.getLogger(AuditLogService.class);
 
     public void record(CommandContext context, String title, String description, Color color) {
-        DiscordGuildConfig config = context.config();
+        record(context, context.config(), title, description, color);
+    }
+
+    /**
+     * Logs against a config other than the one the command started with.
+     *
+     * <p>{@code /setup} needs this: it can set the log channel in the same invocation that
+     * it is reporting, and the context still holds the configuration as it was before.
+     */
+    public void record(
+            CommandContext context,
+            DiscordGuildConfig config,
+            String title,
+            String description,
+            Color color) {
         if (config == null || config.getLogChannelId() == null) {
             return;
         }
@@ -50,5 +64,16 @@ public class AuditLogService {
 
     public void moderation(CommandContext context, String description) {
         record(context, "Registration change", description, new Color(0x9B59B6));
+    }
+
+    /**
+     * Changes to who holds power or which in-game guild counts as ours.
+     *
+     * <p>These decide where silver ends up just as directly as a balance change does —
+     * the staff role, the tracked guild, and the killboard channel are all inputs to who
+     * gets paid — so they belong in the same place officers already look.
+     */
+    public void configuration(CommandContext context, DiscordGuildConfig config, String description) {
+        record(context, config, "Configuration change", description, new Color(0x3498DB));
     }
 }

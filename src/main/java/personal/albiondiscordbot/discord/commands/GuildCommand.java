@@ -17,6 +17,7 @@ import org.springframework.stereotype.Component;
 import personal.albiondiscordbot.albion.AlbionApiClient;
 import personal.albiondiscordbot.albion.dto.AlbionGuildDetail;
 import personal.albiondiscordbot.albion.dto.AlbionSearchResponse;
+import personal.albiondiscordbot.discord.AuditLogService;
 import personal.albiondiscordbot.discord.CommandContext;
 import personal.albiondiscordbot.discord.CommandException;
 import personal.albiondiscordbot.discord.SlashCommand;
@@ -30,11 +31,14 @@ public class GuildCommand implements SlashCommand {
 
     private final AlbionApiClient albion;
     private final TrackedAlbionGuildRepository trackedGuilds;
+    private final AuditLogService auditLog;
     private final Map<String, BiConsumer<SlashCommandInteractionEvent, CommandContext>> subcommands;
 
-    public GuildCommand(AlbionApiClient albion, TrackedAlbionGuildRepository trackedGuilds) {
+    public GuildCommand(
+            AlbionApiClient albion, TrackedAlbionGuildRepository trackedGuilds, AuditLogService auditLog) {
         this.albion = albion;
         this.trackedGuilds = trackedGuilds;
+        this.auditLog = auditLog;
         this.subcommands = Map.of(
                 "add", this::add,
                 "remove", this::remove,
@@ -97,6 +101,11 @@ public class GuildCommand implements SlashCommand {
         }
         trackedGuilds.save(tracked);
 
+        // Which guild counts as ours decides who /split-cta pays, so this belongs in the
+        // log next to the balance changes it ultimately drives.
+        auditLog.configuration(context, context.config(), "Now tracking in-game guild **%s** (`%s`)"
+                .formatted(Formatting.escapeMarkdown(hit.name()), hit.id()));
+
         EmbedBuilder embed = new EmbedBuilder()
                 .setTitle("Now tracking " + Formatting.escapeMarkdown(hit.name()))
                 .setColor(new Color(0x2ECC71))
@@ -121,6 +130,10 @@ public class GuildCommand implements SlashCommand {
                 .orElseThrow(() -> new CommandException("**%s** is not tracked.".formatted(name)));
 
         trackedGuilds.delete(tracked);
+
+        auditLog.configuration(context, context.config(), "Stopped tracking in-game guild **%s** (`%s`)"
+                .formatted(
+                        Formatting.escapeMarkdown(tracked.getAlbionGuildName()), tracked.getAlbionGuildId()));
 
         event.getHook()
                 .sendMessage("No longer tracking **%s**. Existing registrations are unaffected."

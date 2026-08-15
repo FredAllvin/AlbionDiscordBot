@@ -21,7 +21,11 @@ import personal.albiondiscordbot.util.Formatting;
 /**
  * Confirm / Deny / Copy for a pending split or cashout.
  *
- * <p>Custom id: {@code bt:<action>:<op>:<source>:<sourceId>:<amount>:<invokerId>}.
+ * <p>Custom id: {@code bt:<action>:<op>:<source>:<sourceId>:<amount>:<invokerId>:<claim>}.
+ *
+ * <p>The trailing claim token is minted per preview and consumed by the database when the
+ * batch is applied, so one confirmation can only move silver once however many times it
+ * is clicked.
  */
 @Component
 public class BatchButtonHandler implements ButtonHandler {
@@ -44,8 +48,12 @@ public class BatchButtonHandler implements ButtonHandler {
 
     @Override
     public void handle(ButtonInteractionEvent event, String[] args, CommandContext context) {
-        if (args.length < 6) {
-            throw new CommandException("That button is malformed.");
+        if (args.length < 7) {
+            // Six segments is the pre-claim-token id shape, so this is almost always a
+            // preview that was left open across a bot update rather than a real fault.
+            throw new CommandException(
+                    "This confirmation is from before the last bot update and can no longer be used. "
+                            + "Run the command again — nothing has been credited or cleared.");
         }
         String action = args[0];
         String op = args[1];
@@ -53,6 +61,7 @@ public class BatchButtonHandler implements ButtonHandler {
         String sourceId = args[3];
         long amountEach = Long.parseLong(args[4]);
         long invokerId = Long.parseLong(args[5]);
+        String claimToken = args[6];
 
         // Only whoever ran the command may resolve it. Staff permission alone is not
         // enough: two officers each previewing a batch must not confirm each other's.
@@ -61,7 +70,7 @@ public class BatchButtonHandler implements ButtonHandler {
         }
 
         switch (action) {
-            case "ok" -> confirm(event, context, op, source, sourceId, amountEach, invokerId);
+            case "ok" -> confirm(event, context, op, source, sourceId, amountEach, invokerId, claimToken);
             case "no" -> deny(event, op);
             case "cp" -> copy(event, context, source, sourceId);
             default -> throw new CommandException("Unknown button action.");
@@ -75,7 +84,8 @@ public class BatchButtonHandler implements ButtonHandler {
             String source,
             String sourceId,
             long amountEach,
-            long invokerId) {
+            long invokerId,
+            String claimToken) {
 
         // Membership is re-resolved rather than carried from the preview: the role or the
         // registrations may have changed, and acting on the current set is what the
@@ -90,8 +100,8 @@ public class BatchButtonHandler implements ButtonHandler {
         MessageEmbed announcement;
 
         if (BatchConfirmationService.OP_CASHOUT.equals(op)) {
-            BalanceService.CashoutResult result =
-                    batches.executeCashout(context.guildId(), recipients, context.callerId(), label);
+            BalanceService.CashoutResult result = batches.executeCashout(
+                    context.guildId(), recipients, context.callerId(), label, claimToken);
 
             auditLog.money(context, "Cashed out **%s** to %d member(s) of %s (batch %s)"
                     .formatted(
@@ -135,7 +145,7 @@ public class BatchButtonHandler implements ButtonHandler {
                     .build();
         } else {
             BalanceService.SplitResult result = batches.executeSplit(
-                    context.guildId(), recipients, amountEach, context.callerId(), label);
+                    context.guildId(), recipients, amountEach, context.callerId(), label, claimToken);
 
             auditLog.money(context, "Split — **%s** each to %d member(s) of %s, total **%s** (batch %s)"
                     .formatted(

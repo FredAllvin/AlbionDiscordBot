@@ -55,6 +55,15 @@ class BalanceServiceConcurrencyTest extends PostgresTestBase {
     @Autowired
     private personal.albiondiscordbot.service.GuildConfigService guildConfigService;
 
+    /**
+     * A confirmation token stands for one click on one preview, so tests that mean to
+     * apply a batch mint a fresh one. Reusing a token is the double-click case, and
+     * {@link BatchClaimTest} is where that is exercised deliberately.
+     */
+    private static String freshClaim() {
+        return java.util.UUID.randomUUID().toString();
+    }
+
     @BeforeEach
     void reset() {
         ledger.deleteAll();
@@ -184,7 +193,7 @@ class BalanceServiceConcurrencyTest extends PostgresTestBase {
         Set<Long> members = new LinkedHashSet<>(Set.of(10L, 11L, 12L, 13L, 14L));
 
         BalanceService.SplitResult result =
-                balanceService.creditSplit(GUILD, members, 1_000_000L, ALICE, "payout15");
+                balanceService.creditSplit(GUILD, members, 1_000_000L, ALICE, "payout15", freshClaim());
 
         assertThat(result.recipientCount()).isEqualTo(5);
         assertThat(result.amountEach()).isEqualTo(1_000_000L);
@@ -207,7 +216,7 @@ class BalanceServiceConcurrencyTest extends PostgresTestBase {
         members.add(20L);
 
         BalanceService.SplitResult result =
-                balanceService.creditSplit(GUILD, members, 1_000L, ALICE, "dupes");
+                balanceService.creditSplit(GUILD, members, 1_000L, ALICE, "dupes", freshClaim());
 
         assertThat(result.recipientCount()).isEqualTo(2);
         assertThat(balanceService.balanceOf(GUILD, 20L)).isEqualTo(1_000L);

@@ -74,6 +74,18 @@ public class BalanceDao {
         return result.isEmpty() ? OptionalLong.empty() : OptionalLong.of(result.get(0));
     }
 
+    /**
+     * Takes a row lock on every ledger entry in a batch, so two reversals of the same
+     * batch queue instead of both passing an "already reversed" check that neither can
+     * see the other failing. Returns nothing: the lock, not the rows, is the point.
+     */
+    public void lockBatch(String reference) {
+        jdbc.sql("SELECT id FROM balance_transaction WHERE reference = :reference FOR UPDATE")
+                .param("reference", reference)
+                .query(Long.class)
+                .list();
+    }
+
     /** Sets a balance to zero, returning the amount it held before. */
     public long resetToZero(long discordGuildId, long discordUserId) {
         Optional<Long> previous = jdbc.sql(
