@@ -257,7 +257,7 @@ public class BatchButtonHandler implements ButtonHandler {
                 return batches.resolveMember(context.guildId(), member);
             }
             default -> {
-                return batches.resolveBattle(context.guildId(), Long.parseLong(sourceId));
+                return batches.resolveBattles(context.guildId(), battleIds(context, source, sourceId));
             }
         }
     }
@@ -272,9 +272,21 @@ public class BatchButtonHandler implements ButtonHandler {
                 return "<@" + sourceId + ">";
             }
             default -> {
-                Battle battle = batches.requireBattle(Long.parseLong(sourceId));
-                return "CTA " + battle.getAlbionBattleId();
+                return batches.battleLabel(battleIds(context, source, sourceId));
             }
         }
+    }
+
+    /**
+     * A {@code bs} id keys a stored list of battles; a {@code b} id is a single battle
+     * written straight into the custom id. Only previews created before one CTA could span
+     * several killboards use the second shape, and they have to keep working.
+     */
+    private List<Long> battleIds(CommandContext context, String source, String sourceId) {
+        if (BatchConfirmationService.SOURCE_BATTLES.equals(source)) {
+            return batches.battlesOf(context.guildId(), sourceId);
+        }
+        Battle battle = batches.requireBattle(Long.parseLong(sourceId));
+        return List.of(battle.getAlbionBattleId());
     }
 }

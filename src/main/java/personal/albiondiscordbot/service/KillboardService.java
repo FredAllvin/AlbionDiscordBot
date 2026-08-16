@@ -255,7 +255,12 @@ public class KillboardService {
         // officers dig it out of the link. Naming the command correctly matters more than
         // usual here: /payout also exists and moves silver the other way, so an officer
         // following a wrong hint would clear balances instead of crediting them.
-        embed.setFooter("Battle " + battle.id() + " · credit everyone here with /split-cta");
+        //
+        // The comma hint earns its space: a CTA that broke into several killboards gets
+        // several of these posts, and splitting each one separately pays whoever stayed
+        // for all of them once per post.
+        embed.setFooter("Battle " + battle.id()
+                + " · credit everyone here with /split-cta — comma-separate ids to merge fights");
 
         return embed.build();
     }

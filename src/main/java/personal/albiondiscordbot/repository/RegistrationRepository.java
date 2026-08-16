@@ -1,6 +1,7 @@
 package personal.albiondiscordbot.repository;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.data.domain.Pageable;
@@ -24,10 +25,16 @@ public interface RegistrationRepository extends JpaRepository<Registration, Long
     long countByDiscordGuildIdAndActiveTrue(Long discordGuildId);
 
     /**
-     * Registered members of this Discord server who fought in the given battle.
+     * Registered members of this Discord server who fought in <em>any</em> of the given
+     * battles, each returned once.
      *
      * <p>This is what lets {@code /split-cta} credit the people who actually showed up,
      * without anyone hand-tagging them first.
+     *
+     * <p>Takes a list because one CTA is often several battles on the killboard. Selecting
+     * registrations rather than participation rows is what makes the union free: someone
+     * who fought in all three fights still matches once, so merging fights cannot pay
+     * anyone twice.
      */
     @Query("""
             SELECT r FROM Registration r
@@ -35,9 +42,10 @@ public interface RegistrationRepository extends JpaRepository<Registration, Long
               AND r.active = true
               AND r.albionPlayerId IN (
                   SELECT p.albionPlayerId FROM BattleParticipation p
-                  WHERE p.albionBattleId = :albionBattleId)
+                  WHERE p.albionBattleId IN :albionBattleIds)
             """)
-    List<Registration> findParticipantsOfBattle(Long discordGuildId, Long albionBattleId);
+    List<Registration> findParticipantsOfBattles(
+            Long discordGuildId, Collection<Long> albionBattleIds);
 
     /**
      * Active registrations whose last API check is oldest, so a background sweep can

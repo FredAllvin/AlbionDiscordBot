@@ -106,7 +106,7 @@ Then members can `/register <their character name>`.
 | `/balance stats [public]` | Staff | All balances as an HTML attachment |
 | `/role add <name> @user…` | Staff | Create a role and add everyone mentioned |
 | `/split @role <amount>` | Staff | Credit a share of loot to **each** member's balance |
-| `/split-cta <amount> [battle]` | Staff | Credit everyone who fought, from killboard data |
+| `/split-cta <amount> [battle…]` | Staff | Credit everyone who fought, from killboard data. Takes several battle ids |
 | `/payout user:@member` | Staff | **Cash out** one member — send their balance, then clear it |
 | `/payout role:@role` | Staff | **Cash out** everyone in a role |
 | `/undo <batch>` | Staff | Reverse a split or cashout by its batch id |
@@ -145,6 +145,29 @@ A typical run:
 poller recorded in the most recent tracked CTA. Pass a battle id (shown in the footer of
 every killboard post) for an older one. `/role add` + `/split` is still there for splits
 that don't map to a single fight.
+
+**One CTA is often several killboards.** The fight breaks off, everyone reforms, and
+Albion opens a new battle id — which is why albionbb merges them at
+`europe.albionbb.com/battles/417352406,417352999`. Name them all in one split:
+
+```
+/split-cta 1m battle:417352406,417352999,417353400
+```
+
+Everyone who was in **any** of those fights is credited **once**, so the person who came
+for one fight gets a full share and the person who stayed for all three does not get
+three. Splitting them one at a time is what pays the overlap twice, so the command takes
+the whole list rather than capping it. The pasted albionbb URL works in place of the ids.
+
+**A battle the poller never saw is fetched on demand.** `/split-cta` used to refuse with
+"battle is not tracked" whenever the bot restarted across a fight, the guild was added
+with `/guild add` afterwards, the split happened more than a day later, or the fight was
+one of the smaller killboards the poller had already paged past — none of which say
+anything about whether your guild was in it. Naming an id the bot has no record of now
+asks the API directly (`/battles/{id}` has no 24-hour limit), checks one of your guilds
+actually fought, and stores it — so `/stats` picks it up too. The refusals that remain say
+which of them applies: the id is not a battle, none of your guilds were in it, or the
+fight is still counting kills and would pay a partial roster.
 
 **Paying a handful of people** needs no role either. `/balance add` and `/balance remove`
 take as many mentions as you like, and the amount is per member:

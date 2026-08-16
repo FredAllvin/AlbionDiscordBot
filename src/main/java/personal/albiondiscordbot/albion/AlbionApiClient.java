@@ -222,6 +222,36 @@ public class AlbionApiClient {
         });
     }
 
+    /**
+     * One battle by id, whatever its age.
+     *
+     * <p>{@code /battles} only reaches back 24 hours, so the poller's view of the world
+     * has a hard floor: a fight from before the guild was tracked, or from a gap in
+     * polling, is not in the database and never will be. This endpoint has no such floor,
+     * which is what lets {@code /split-cta} pay a battle the poller never saw.
+     *
+     * <p>Verified against the live EU host on 16 August 2026: {@code /battles/417352406}
+     * (two days old at the time) returned the same shape as a list entry — complete
+     * {@code players}, {@code guilds} and {@code alliances} maps — and an id that does not
+     * exist answers 404 rather than an empty body.
+     */
+    public Optional<AlbionBattle> getBattle(long albionBattleId) {
+        return rateLimiter.call(() -> {
+            try {
+                return Optional.ofNullable(restClient
+                        .get()
+                        .uri(uri -> uncached(uri.path("/battles/{id}")).build(albionBattleId))
+                        .retrieve()
+                        .body(AlbionBattle.class));
+            } catch (RestClientException e) {
+                if (isNotFound(e)) {
+                    return Optional.empty();
+                }
+                throw e;
+            }
+        });
+    }
+
     private boolean isNotFound(RestClientException e) {
         if (e instanceof org.springframework.web.client.HttpStatusCodeException statusException) {
             HttpStatusCode status = statusException.getStatusCode();

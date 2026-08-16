@@ -1,6 +1,7 @@
 package personal.albiondiscordbot.repository;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
@@ -33,10 +34,18 @@ public interface BattleParticipationRepository extends JpaRepository<BattleParti
     boolean existsByAlbionBattleId(Long albionBattleId);
 
     /**
-     * How many of <em>our</em> guild members fought in a battle. Participation rows only
-     * exist for tracked guilds, so this excludes the enemy side.
+     * How many distinct guild members fought across these battles. Participation rows
+     * only exist for tracked guilds, so this excludes the enemy side.
+     *
+     * <p>Distinct on the player, not a row count: someone who fought in two of a CTA's
+     * three battles is one person who turned up, and this figure is compared against the
+     * number of recipients to report how many could not be credited.
      */
-    long countByAlbionBattleId(Long albionBattleId);
+    @Query("""
+            SELECT COUNT(DISTINCT p.albionPlayerId) FROM BattleParticipation p
+            WHERE p.albionBattleId IN :albionBattleIds
+            """)
+    long countFightersIn(Collection<Long> albionBattleIds);
 
     List<BattleParticipation> findByAlbionBattleId(Long albionBattleId);
 }

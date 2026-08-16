@@ -13,12 +13,15 @@ import net.dv8tion.jda.api.entities.Member;
 import net.dv8tion.jda.api.entities.MessageEmbed;
 import net.dv8tion.jda.api.entities.Role;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import personal.albiondiscordbot.discord.CommandException;
 import personal.albiondiscordbot.domain.Battle;
 import personal.albiondiscordbot.domain.Registration;
+import personal.albiondiscordbot.domain.SplitBattleGroup;
 import personal.albiondiscordbot.repository.BattleParticipationRepository;
 import personal.albiondiscordbot.repository.BattleRepository;
 import personal.albiondiscordbot.repository.RegistrationRepository;
+import personal.albiondiscordbot.repository.SplitBattleGroupRepository;
 import personal.albiondiscordbot.util.Formatting;
 
 /**
@@ -45,8 +48,17 @@ public class BatchConfirmationService {
     public static final String OP_CASHOUT = "cash";
 
     public static final String SOURCE_ROLE = "r";
-    public static final String SOURCE_BATTLE = "b";
     public static final String SOURCE_USER = "u";
+
+    /**
+     * One battle, its id carried directly in the custom id. No longer minted — one CTA is
+     * often several battles — but still resolved, so a preview created before
+     * {@link #SOURCE_BATTLES} existed keeps working.
+     */
+    public static final String SOURCE_BATTLE = "b";
+
+    /** Several battles, looked up by key from {@code split_battle_group}. */
+    public static final String SOURCE_BATTLES = "bs";
 
     /** Rows shown inline before the list is truncated in favour of the copy button. */
     private static final int PREVIEW_ROWS = 25;
@@ -55,16 +67,19 @@ public class BatchConfirmationService {
     private final RegistrationRepository registrations;
     private final BattleRepository battles;
     private final BattleParticipationRepository participations;
+    private final SplitBattleGroupRepository battleGroups;
 
     public BatchConfirmationService(
             BalanceService balances,
             RegistrationRepository registrations,
             BattleRepository battles,
-            BattleParticipationRepository participations) {
+            BattleParticipationRepository participations,
+            SplitBattleGroupRepository battleGroups) {
         this.balances = balances;
         this.registrations = registrations;
         this.battles = battles;
         this.participations = participations;
+        this.battleGroups = battleGroups;
     }
 
     /**
@@ -107,8 +122,17 @@ public class BatchConfirmationService {
                 registration != null));
     }
 
-    public List<Recipient> resolveBattle(long discordGuildId, long albionBattleId) {
-        return registrations.findParticipantsOfBattle(discordGuildId, albionBattleId).stream()
+    /**
+     * Everyone registered here who fought in any of these battles — each person once,
+     * however many of the fights they were in.
+     *
+     * <p>That "once" is the whole point of taking a list. A CTA that broke into three
+     * killboards used to need three splits, which paid the people who stayed for all of
+     * it three times and the person who came for one fight once. The union pays turning
+     * up, which is what the silver is for.
+     */
+    public List<Recipient> resolveBattles(long discordGuildId, List<Long> albionBattleIds) {
+        return registrations.findParticipantsOfBattles(discordGuildId, albionBattleIds).stream()
                 .map(r -> new Recipient(r.getDiscordUserId(), r.getAlbionPlayerName(), true))
                 .toList();
     }
@@ -119,8 +143,51 @@ public class BatchConfirmationService {
                         "Battle `%d` is not tracked.".formatted(albionBattleId)));
     }
 
-    public long countOurFighters(long albionBattleId) {
-        return participations.countByAlbionBattleId(albionBattleId);
+    /** Distinct guild members across these battles, registered or not. */
+    public long countOurFighters(List<Long> albionBattleIds) {
+        return participations.countFightersIn(albionBattleIds);
+    }
+
+    // ------------------------------------------------------------ battle groups
+
+    /**
+     * Records which battles a preview covers and returns the key its buttons will carry.
+     *
+     * <p>Every other piece of a pending batch lives in the Discord custom id, which caps
+     * at 100 characters — enough for three or four battle ids and no more. Rather than cap
+     * a CTA at four killboards, which would push an officer into running two splits and
+     * double-paying the overlap, the list goes to the database and the button carries a
+     * key. Same durability: a preview still survives a restart with nothing to expire.
+     */
+    @Transactional
+    public String rememberBattles(long discordGuildId, List<Long> albionBattleIds) {
+        String key = newGroupKey();
+        battleGroups.save(new SplitBattleGroup(key, discordGuildId, albionBattleIds));
+        return key;
+    }
+
+    /** The battles behind a key minted by {@link #rememberBattles}. */
+    public List<Long> battlesOf(long discordGuildId, String groupKey) {
+        return battleGroups
+                .findByGroupKeyAndDiscordGuildId(groupKey, discordGuildId)
+                .orElseThrow(() -> new CommandException(
+                        "That confirmation no longer knows which fights it covers. Run `/split-cta` "
+                                + "again — nothing has been credited."))
+                .ids();
+    }
+
+    /**
+     * How a split names the fights it paid, in the preview, the public announcement and
+     * the ledger note behind every member's {@code /balance history}.
+     */
+    public String battleLabel(List<Long> albionBattleIds) {
+        if (albionBattleIds.size() == 1) {
+            return "CTA " + albionBattleIds.get(0);
+        }
+        return "CTA across %d fights (%s)"
+                .formatted(
+                        albionBattleIds.size(),
+                        albionBattleIds.stream().map(String::valueOf).collect(Collectors.joining(", ")));
     }
 
     /** Total the guild owes these members. Negative balances are debts, so they do not offset. */
@@ -271,6 +338,24 @@ public class BatchConfirmationService {
      * costs a refused click.
      */
     private static String newClaimToken() {
+        return shortToken();
+    }
+
+    /**
+     * Keys a {@code split_battle_group}, from the same 64 bits and the same 13 characters.
+     *
+     * <p>Worth being explicit that a collision is not free here the way it is for a claim
+     * token: the second write would overwrite the first group's row, and an older preview
+     * left open would then resolve to the newer one's battles. It takes on the order of
+     * four billion previews to reach an even chance of that, against the handful a guild
+     * runs in a week, so the risk is theoretical — but it is a wrong payout rather than a
+     * refused click, which is why it is written down.
+     */
+    private static String newGroupKey() {
+        return shortToken();
+    }
+
+    private static String shortToken() {
         return Long.toUnsignedString(java.util.concurrent.ThreadLocalRandom.current().nextLong(), 36);
     }
 
