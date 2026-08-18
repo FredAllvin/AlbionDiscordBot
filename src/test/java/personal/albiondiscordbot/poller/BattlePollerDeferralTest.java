@@ -113,7 +113,7 @@ class BattlePollerDeferralTest {
         poller.runOnce();
 
         verify(ingestService, never()).ingest(any(), any());
-        verify(killboardService, never()).onBattleStored(any());
+        verify(killboardService, never()).onBattleFinalized(any());
         assertThat(state.getOldestOpenBattleAt())
                 .as("the next run has to page back this far, not just one overlap")
                 .isEqualTo(startedAt);
@@ -128,7 +128,7 @@ class BattlePollerDeferralTest {
 
         poller.runOnce();
 
-        verify(killboardService).onBattleStored(any());
+        verify(killboardService).onBattleFinalized(any());
         assertThat(state.getOldestOpenBattleAt())
                 .as("nothing outstanding, so the poll goes back to being shallow")
                 .isNull();

@@ -4,16 +4,17 @@ import java.awt.Color;
 import java.time.Duration;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.JDA;
+import net.dv8tion.jda.api.entities.Message;
 import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import personal.albiondiscordbot.albion.dto.AlbionBattle;
 import personal.albiondiscordbot.config.AlbionProperties;
 import personal.albiondiscordbot.domain.DiscordGuildConfig;
@@ -30,6 +31,12 @@ import personal.albiondiscordbot.util.Formatting;
  * holds the battle's complete JSON when it finalizes, including the enemy guild and
  * alliance maps. The embed is built from that in-memory object and discarded, which is
  * why enemy rosters never need storing.
+ *
+ * <p>Posting is exactly-once in both directions, and the two halves come from different
+ * places. <em>At most once</em> is the {@code killboard_post} primary key. <em>At least
+ * once</em> is the poller offering the same battle on every run it appears in, with a row
+ * written only after Discord has taken the message — so a send that fails is retried
+ * rather than mistaken for one that worked.
  */
 @Service
 public class KillboardService {
@@ -55,13 +62,26 @@ public class KillboardService {
         this.albionProperties = albionProperties;
     }
 
-    /** Called once per battle, the first time the poller stores it. */
-    @Transactional
-    public void onBattleStored(AlbionBattle battle) {
+    /**
+     * Offered every finalized battle a tracked guild fought in, on every poll — not only
+     * the first time one is stored.
+     *
+     * <p>Keeping a battle to one post is {@code killboard_post}'s primary key doing its
+     * job, not the caller's. Handing over every sighting is what makes a refused post
+     * recoverable at all: the poller re-scans an overlapping window every minute, so a
+     * killboard Discord would not take is simply tried again on the next run — the same
+     * reason re-reading a battle costs the ingest nothing.
+     */
+    public void onBattleFinalized(AlbionBattle battle) {
         List<Long> discordGuildIds =
                 trackedGuilds.findDiscordGuildIdsTracking(List.copyOf(battle.guilds().keySet()));
 
         for (Long discordGuildId : discordGuildIds) {
+            // Cheapest guard first: now that every sighting arrives here, almost all of
+            // them are battles this server has already been shown.
+            if (posts.existsByKey(new KillboardPost.Key(discordGuildId, battle.id()))) {
+                continue;
+            }
             DiscordGuildConfig config = configs.findById(discordGuildId).orElse(null);
             if (config == null || config.getKillboardChannelId() == null) {
                 continue;
@@ -81,15 +101,17 @@ public class KillboardService {
                     || ourPlayerCount(battle, ourGuildIds) < config.getCtaMinGuildPlayers()) {
                 continue;
             }
-            KillboardPost.Key key = new KillboardPost.Key(discordGuildId, battle.id());
-            if (posts.existsByKey(key)) {
-                continue;
-            }
 
-            // Record the post before sending. Discord could succeed while the reply is
-            // lost, and a duplicate embed is worse than a missing message id.
-            posts.save(new KillboardPost(discordGuildId, battle.id(), null));
-            send(config, battle, ourGuildIds);
+            // Recorded only once Discord has actually taken it. The other order — claim
+            // the post, then send — loses a killboard permanently on any refusal, because
+            // nothing revisits a battle that is already marked posted: a missing Send
+            // Messages permission, a rate limit, a deploy landing mid-send, and the fight
+            // is simply never posted and never retried. What this order risks instead is
+            // one duplicate embed, if the insert fails in the window between the send
+            // returning and the commit. That window is milliseconds wide, and a duplicate
+            // is a worse-looking channel rather than a CTA nobody gets told about.
+            send(config, battle, ourGuildIds)
+                    .ifPresent(messageId -> posts.save(new KillboardPost(discordGuildId, battle.id(), messageId)));
         }
     }
 
@@ -136,10 +158,15 @@ public class KillboardService {
                 .collect(Collectors.toSet());
     }
 
-    private void send(DiscordGuildConfig config, AlbionBattle battle, Set<String> ourGuildIds) {
+    /**
+     * @return the id of the message Discord accepted, or empty if it did not take it —
+     *     in which case nothing is recorded and the next poll offers the battle again
+     */
+    private Optional<Long> send(DiscordGuildConfig config, AlbionBattle battle, Set<String> ourGuildIds) {
         JDA jda = jdaProvider.getIfAvailable();
         if (jda == null) {
-            return;
+            // Still connecting. Nothing is lost by saying so and waiting a minute.
+            return Optional.empty();
         }
         TextChannel channel = jda.getTextChannelById(config.getKillboardChannelId());
         if (channel == null) {
@@ -147,13 +174,22 @@ public class KillboardService {
                     "Killboard channel {} not found for guild {}",
                     config.getKillboardChannelId(),
                     config.getDiscordGuildId());
-            return;
+            return Optional.empty();
         }
 
         try {
-            channel.sendMessageEmbeds(buildEmbed(battle, ourGuildIds)).queue();
+            // complete() rather than queue(): queue() hands the request off and returns
+            // immediately, so a rejection surfaces on a JDA thread long after this method
+            // and its catch block are gone — which is how a failed send used to look
+            // exactly like a successful one. Blocking the poller thread for one message is
+            // the price of knowing. It cannot stall the poller either: runs are
+            // single-flight and anchored on the last success, so a slow send delays the
+            // next poll rather than skipping anything.
+            Message message = channel.sendMessageEmbeds(buildEmbed(battle, ourGuildIds)).complete();
+            return Optional.of(message.getIdLong());
         } catch (RuntimeException e) {
-            log.warn("Failed to post killboard for battle {}", battle.id(), e);
+            log.warn("Failed to post killboard for battle {}; retrying on the next poll", battle.id(), e);
+            return Optional.empty();
         }
     }
 

@@ -147,11 +147,14 @@ public class BattlePoller {
                     continue;
                 }
 
-                boolean firstSighting = ingestService.ingest(battle, trackedGuildIds);
-                if (firstSighting) {
+                if (ingestService.ingest(battle, trackedGuildIds)) {
                     ingested++;
-                    killboardService.onBattleStored(battle);
                 }
+                // Offered on every sighting, not only the first. Discord can refuse a
+                // killboard — a missing permission, a rate limit, a restart mid-send — and
+                // handing the battle over again is the only way that post is ever retried.
+                // Keeping it to one post is killboard_post's job, not this loop's.
+                killboardService.onBattleFinalized(battle);
             }
 
             if (oldestInPage.isBefore(horizon)) {
