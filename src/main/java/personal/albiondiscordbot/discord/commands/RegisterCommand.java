@@ -62,6 +62,16 @@ public class RegisterCommand implements SlashCommand {
         return "register";
     }
 
+    /**
+     * Public: linking a Discord account to a character is the one thing everyone else in
+     * the guild has a reason to see, because it is what makes a name in the killboard and
+     * a name in the channel the same person.
+     */
+    @Override
+    public boolean ephemeral(SlashCommandInteractionEvent event) {
+        return false;
+    }
+
     @Override
     public SlashCommandData definition() {
         return Commands.slash("register", "Link your Albion character to your Discord account")

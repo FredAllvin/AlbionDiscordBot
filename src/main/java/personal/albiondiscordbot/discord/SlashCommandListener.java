@@ -58,24 +58,31 @@ public class SlashCommandListener extends ListenerAdapter {
             return;
         }
 
-        event.deferReply(command.ephemeral()).queue();
+        // Decided before deferring, because the deferral is what fixes it: the reply that
+        // follows fills the placeholder this puts in the channel and inherits its privacy.
+        boolean inPublic = !command.ephemeral(event);
+
+        event.deferReply(!inPublic).queue();
         try {
-            executor.execute(() -> run(command, event));
+            executor.execute(() -> run(command, event, inPublic));
         } catch (RejectedExecutionException e) {
             // The pool is full. Saying so beats the alternative of running the command on
             // this gateway thread, which would stall every server the bot is in.
             log.warn("Command /{} rejected — the command pool is saturated", command.name());
-            reply(event, "The bot is busy right now — give it a moment and try that again.");
+            reply(event, inPublic, "The bot is busy right now — give it a moment and try that again.");
         }
     }
 
-    private void run(SlashCommand command, SlashCommandInteractionEvent event) {
+    private void run(SlashCommand command, SlashCommandInteractionEvent event, boolean inPublic) {
         try {
             DiscordGuildConfig config =
                     guildConfigService.find(event.getGuild().getIdLong()).orElse(null);
 
             if (command.requiresSetup() && (config == null || !config.isSetupCompleted())) {
-                reply(event, "This server is not set up yet. An administrator needs to run `/setup` first.");
+                reply(
+                        event,
+                        inPublic,
+                        "This server is not set up yet. An administrator needs to run `/setup` first.");
                 return;
             }
             if (command.staffOnly()) {
@@ -85,14 +92,34 @@ public class SlashCommandListener extends ListenerAdapter {
             command.execute(event, new CommandContext(event.getGuild(), event.getMember(), config));
 
         } catch (CommandException e) {
-            reply(event, e.getMessage());
+            reply(event, inPublic, e.getMessage());
         } catch (Exception e) {
             log.error("Command /{} failed in guild {}", command.name(), event.getGuild().getId(), e);
-            reply(event, "Something went wrong running that command. The error has been logged.");
+            reply(
+                    event,
+                    inPublic,
+                    "Something went wrong running that command. The error has been logged.");
         }
     }
 
-    private void reply(SlashCommandInteractionEvent event, String message) {
-        event.getHook().sendMessage(message).setEphemeral(true).queue();
+    /**
+     * Failures always come back to the caller alone, however public the command was.
+     *
+     * <p>A public command that failed has already put a placeholder in the channel, and
+     * the reply that fills it would be public too. "You are not registered" is not guild
+     * news, so the placeholder is taken back down first and the message follows as an
+     * ephemeral follow-up. The delete is allowed to fail — an expired or already-removed
+     * placeholder is no reason to swallow the explanation.
+     */
+    private void reply(SlashCommandInteractionEvent event, boolean inPublic, String message) {
+        if (!inPublic) {
+            event.getHook().sendMessage(message).setEphemeral(true).queue();
+            return;
+        }
+        event.getHook()
+                .deleteOriginal()
+                .mapToResult()
+                .flatMap(ignored -> event.getHook().sendMessage(message).setEphemeral(true))
+                .queue();
     }
 }

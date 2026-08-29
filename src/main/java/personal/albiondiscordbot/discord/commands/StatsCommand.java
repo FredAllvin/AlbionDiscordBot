@@ -42,7 +42,7 @@ public class StatsCommand implements SlashCommand {
     }
 
     @Override
-    public boolean ephemeral() {
+    public boolean ephemeral(SlashCommandInteractionEvent event) {
         return false;
     }
 

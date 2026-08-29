@@ -31,8 +31,20 @@ public interface SlashCommand {
         return true;
     }
 
-    /** Whether the reply is visible only to the caller. */
-    default boolean ephemeral() {
+    /**
+     * Whether the reply is visible only to the caller.
+     *
+     * <p>Takes the event because one command can need both answers. {@code /balance add}
+     * is guild news and {@code /balance remove} is a correction; {@code /balance stats}
+     * is told which it is by an option.
+     *
+     * <p>This decides the <em>deferral</em>, which is what actually settles it: the first
+     * message sent through the hook fills the placeholder the deferral put in the
+     * channel, and a later {@code setEphemeral} on that message cannot make it more or
+     * less private than the deferral already was. Getting it right here is the only way
+     * to get it right at all.
+     */
+    default boolean ephemeral(SlashCommandInteractionEvent event) {
         return true;
     }
 }

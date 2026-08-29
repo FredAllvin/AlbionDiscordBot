@@ -4,14 +4,17 @@ import java.awt.Color;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.BiConsumer;
+import java.util.stream.Collectors;
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.entities.Member;
+import net.dv8tion.jda.api.entities.Message;
 import net.dv8tion.jda.api.entities.User;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
 import net.dv8tion.jda.api.interactions.InteractionContextType;
@@ -37,6 +40,7 @@ import personal.albiondiscordbot.repository.BalanceTransactionRepository;
 import personal.albiondiscordbot.repository.RegistrationRepository;
 import personal.albiondiscordbot.service.BalanceService;
 import personal.albiondiscordbot.util.Formatting;
+import personal.albiondiscordbot.util.MentionParser;
 import personal.albiondiscordbot.util.SilverAmountParser;
 
 /** {@code /balance check|add|remove|reset|give|stats} */
@@ -45,6 +49,15 @@ public class BalanceCommand implements SlashCommand {
 
     /** Enough history to settle an argument without flooding the channel. */
     private static final int HISTORY_LIMIT = 15;
+
+    /** Message bodies cap at 2000 characters; the rest is embed. */
+    private static final int PING_BUDGET = 1800;
+
+    private static final EnumSet<Message.MentionType> PING_USERS =
+            EnumSet.of(Message.MentionType.USER);
+
+    private static final EnumSet<Message.MentionType> NO_PINGS =
+            EnumSet.noneOf(Message.MentionType.class);
 
     private final BalanceService balances;
     private final PermissionService permissions;
@@ -81,6 +94,30 @@ public class BalanceCommand implements SlashCommand {
     @Override
     public String name() {
         return "balance";
+    }
+
+    /**
+     * Per subcommand, because this one command does jobs with opposite audiences.
+     *
+     * <p>Silver arriving is guild news — the recipients are pinged and everyone can see
+     * what the officers paid, which is the point. Silver being taken back is a
+     * correction: the audit log has it, and putting it in the channel only starts an
+     * argument the ledger has already settled.
+     */
+    @Override
+    public boolean ephemeral(SlashCommandInteractionEvent event) {
+        String sub = event.getSubcommandName();
+        if (sub == null) {
+            return true;
+        }
+        return switch (sub) {
+            case "add", "check", "history", "give" -> false;
+            // Honours its own option. The deferral has to agree with it: the reply cannot
+            // be more public than the deferral that preceded it, which is why setting the
+            // flag on the message alone never worked here.
+            case "stats" -> !event.getOption("public", false, OptionMapping::getAsBoolean);
+            default -> true;
+        };
     }
 
     @Override
@@ -164,10 +201,10 @@ public class BalanceCommand implements SlashCommand {
         long amount = SilverAmountParser.parse(event.getOption("amount", OptionMapping::getAsString));
         String reason = event.getOption("reason", OptionMapping::getAsString);
 
-        Map<Long, Long> after =
+        BalanceService.BulkResult result =
                 balances.addEach(context.guildId(), ids(targets), amount, context.callerId(), reason);
 
-        report(event, context, Direction.CREDIT, targets, after, amount, reason);
+        report(event, context, Direction.CREDIT, targets, result, amount, reason);
     }
 
     private void remove(SlashCommandInteractionEvent event, CommandContext context) {
@@ -176,25 +213,29 @@ public class BalanceCommand implements SlashCommand {
         long amount = SilverAmountParser.parse(event.getOption("amount", OptionMapping::getAsString));
         String reason = event.getOption("reason", OptionMapping::getAsString);
 
-        Map<Long, Long> after =
+        BalanceService.BulkResult result =
                 balances.removeEach(context.guildId(), ids(targets), amount, context.callerId(), reason);
 
-        report(event, context, Direction.DEBIT, targets, after, amount, reason);
+        report(event, context, Direction.DEBIT, targets, result, amount, reason);
     }
 
-    /** Which way the silver went. Add and remove differ only in these three things. */
+    /** Which way the silver went. Add and remove differ only in these few things. */
     private enum Direction {
-        CREDIT("Added", "to", 0x2ECC71),
-        DEBIT("Removed", "from", 0xE74C3C);
+        /** Pinged: someone who has just been credited should hear about it. */
+        CREDIT("Added", "to", 0x2ECC71, true),
+        /** Not pinged, and not public either — see {@link #ephemeral}. */
+        DEBIT("Removed", "from", 0xE74C3C, false);
 
         private final String verb;
         private final String preposition;
         private final Color color;
+        private final boolean notifies;
 
-        Direction(String verb, String preposition, int rgb) {
+        Direction(String verb, String preposition, int rgb, boolean notifies) {
             this.verb = verb;
             this.preposition = preposition;
             this.color = new Color(rgb);
+            this.notifies = notifies;
         }
     }
 
@@ -205,27 +246,36 @@ public class BalanceCommand implements SlashCommand {
      * embed for it would be noise. Several get a list, and the header says <em>each</em>
      * and prints the total: an officer reading "Added 1,000,000 to 8 members" should not
      * have to work out whether the guild just went 1m or 8m further into debt.
+     *
+     * <p>A credit names everyone in the message <strong>body</strong> rather than only in
+     * the embed. Mentions inside an embed render as names and notify nobody, and a member
+     * who is never told they were paid is most of the way to believing they were not.
      */
     private void report(
             SlashCommandInteractionEvent event,
             CommandContext context,
             Direction direction,
             List<Member> targets,
-            Map<Long, Long> after,
+            BalanceService.BulkResult result,
             long amount,
             String reason) {
 
+        Map<Long, Long> after = result.after();
         boolean hasReason = reason != null && !reason.isBlank();
         String suffix = hasReason ? " — " + Formatting.escapeMarkdown(reason) : "";
+        // Only in the audit log. Showing it in the reply would invite an /undo that
+        // deliberately declines these batches — /balance remove is the way back.
+        String batchNote = " (batch %s)".formatted(result.batchId());
 
         if (targets.size() == 1) {
             Member only = targets.get(0);
             long balance = after.get(only.getIdLong());
 
-            auditLog.money(context, "%s **%s** %s %s (now %s)%s".formatted(
+            auditLog.money(context, "%s **%s** %s %s (now %s)%s%s".formatted(
                     direction.verb, Formatting.silver(amount), direction.preposition,
-                    only.getAsMention(), Formatting.silver(balance), suffix));
+                    only.getAsMention(), Formatting.silver(balance), suffix, batchNote));
 
+            // The mention is already in the body here, so this pings on its own.
             event.getHook()
                     .sendMessage("%s **%s** %s %s. New balance: **%s**."
                             .formatted(
@@ -234,14 +284,15 @@ public class BalanceCommand implements SlashCommand {
                                     direction.preposition,
                                     only.getAsMention(),
                                     Formatting.silver(balance)))
+                    .setAllowedMentions(direction.notifies ? PING_USERS : NO_PINGS)
                     .queue();
             return;
         }
 
         long total = amount * targets.size();
-        auditLog.money(context, "%s **%s each** %s **%d** members — **%s** in total%s".formatted(
+        auditLog.money(context, "%s **%s each** %s **%d** members — **%s** in total%s%s".formatted(
                 direction.verb, Formatting.silver(amount), direction.preposition,
-                targets.size(), Formatting.silver(total), suffix));
+                targets.size(), Formatting.silver(total), suffix, batchNote));
 
         StringBuilder body = new StringBuilder();
         int listed = 0;
@@ -267,7 +318,11 @@ public class BalanceCommand implements SlashCommand {
                 .setFooter("%s total%s".formatted(
                         Formatting.silver(total), hasReason ? " — " + reason : ""));
 
-        event.getHook().sendMessageEmbeds(embed.build()).queue();
+        event.getHook()
+                .sendMessage(direction.notifies ? Formatting.mentions(ids(targets), PING_BUDGET) : "")
+                .addEmbeds(embed.build())
+                .setAllowedMentions(direction.notifies ? PING_USERS : NO_PINGS)
+                .queue();
     }
 
     private void reset(SlashCommandInteractionEvent event, CommandContext context) {
@@ -424,6 +479,20 @@ public class BalanceCommand implements SlashCommand {
      * <p>Members, not users: a bare user id resolves to someone who is not in this server,
      * where their balance never shows up in {@code /balance stats} and can never be paid
      * out — the same reason {@code /balance give} insists on a member.
+     *
+     * <p><strong>All of them or none of them.</strong> JDA resolves the mentions in a
+     * STRING option only against the {@code resolved} map Discord sends with the
+     * interaction — {@code InteractionMentions.matchMember} never falls back to the guild
+     * cache — so any {@code <@id>} that Discord did not itself resolve comes back null and
+     * is dropped. That covers pasted mention text and a command re-run from history: it
+     * matches the mention pattern, renders in the channel like every other mention, and
+     * resolves to nobody.
+     *
+     * <p>Left alone, that pays the people who did resolve and reports success with a
+     * smaller number than was typed, which nobody cross-checks. So the raw text is counted
+     * too and a shortfall refuses the whole command. Consistent with {@link
+     * BalanceService#removeEach}: an adjustment that reaches some of a group is worse than
+     * one that reaches none, because only the second one is obvious.
      */
     private List<Member> mentionedMembers(SlashCommandInteractionEvent event) {
         OptionMapping option = event.getOption("members");
@@ -432,10 +501,45 @@ public class BalanceCommand implements SlashCommand {
         }
 
         // A Set: mentioning the same person twice must not pay them twice.
-        Set<Member> members = new LinkedHashSet<>(option.getMentions().getMembers());
-        members.removeIf(m -> m.getUser().isBot());
+        Set<Member> resolved = new LinkedHashSet<>(option.getMentions().getMembers());
 
-        if (members.isEmpty()) {
+        String raw = option.getAsString();
+        List<String> missing = MentionParser.unresolved(
+                raw, resolved.stream().map(Member::getId).toList());
+
+        if (!missing.isEmpty()) {
+            // Two different faults look identical from here, and they need opposite
+            // fixes. Discord resolved a user but not a member for someone who has left
+            // the server; it resolved neither for mention text it never produced.
+            Set<String> knownUsers = option.getMentions().getUsers().stream()
+                    .map(User::getId)
+                    .collect(Collectors.toSet());
+            List<String> left = missing.stream().filter(knownUsers::contains).toList();
+            List<String> unresolved = missing.stream().filter(id -> !knownUsers.contains(id)).toList();
+
+            StringBuilder message = new StringBuilder("**Nothing was changed for anyone.** ");
+            if (!left.isEmpty()) {
+                message.append("%s %s not in this server, so their balance cannot be adjusted here. "
+                        .formatted(mentionsOf(left), left.size() == 1 ? "is" : "are"));
+            }
+            if (!unresolved.isEmpty()) {
+                message.append(("I could not resolve %s. A mention only counts when Discord "
+                                + "resolves it as you type — pick each name from the autocomplete "
+                                + "popup rather than pasting it in or re-running an older command.")
+                        .formatted(mentionsOf(unresolved)));
+            }
+            throw new CommandException(message.toString().trim());
+        }
+
+        // Bots resolve fine and are excluded on purpose, so they are not a shortfall —
+        // but say so rather than quietly returning a shorter list than was asked for.
+        List<Member> bots = resolved.stream().filter(m -> m.getUser().isBot()).toList();
+        resolved.removeAll(bots);
+
+        if (resolved.isEmpty()) {
+            if (!bots.isEmpty()) {
+                throw new CommandException("Bots do not hold a balance, so there is nobody to adjust.");
+            }
             if (!option.getMentions().getRoles().isEmpty()) {
                 throw new CommandException(
                         "That is a role, not a list of members. `/split role:… amount:…` credits "
@@ -447,7 +551,22 @@ public class BalanceCommand implements SlashCommand {
                             + "Typed-out names do not count — pick each one from the autocomplete so "
                             + "it becomes a real mention.");
         }
-        return List.copyOf(members);
+        if (!bots.isEmpty()) {
+            throw new CommandException(
+                    "%s %s a bot and cannot hold a balance. Nothing was changed — drop %s and run it again."
+                            .formatted(
+                                    bots.stream()
+                                            .map(Member::getAsMention)
+                                            .collect(Collectors.joining(" ")),
+                                    bots.size() == 1 ? "is" : "are",
+                                    bots.size() == 1 ? "it" : "them"));
+        }
+        return List.copyOf(resolved);
+    }
+
+    /** Raw ids back into mentions, so the caller sees names rather than numbers. */
+    private static String mentionsOf(List<String> userIds) {
+        return userIds.stream().map("<@%s>"::formatted).collect(Collectors.joining(" "));
     }
 
     private static List<Long> ids(List<Member> members) {

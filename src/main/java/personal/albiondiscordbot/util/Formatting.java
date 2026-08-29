@@ -2,6 +2,7 @@ package personal.albiondiscordbot.util;
 
 import java.text.DecimalFormat;
 import java.text.DecimalFormatSymbols;
+import java.util.Collection;
 import java.util.Locale;
 
 /** Shared display helpers. */
@@ -9,6 +10,9 @@ public final class Formatting {
 
     private static final DecimalFormat THOUSANDS =
             new DecimalFormat("#,##0", DecimalFormatSymbols.getInstance(Locale.US));
+
+    /** Characters held back in {@link #mentions} for the "…and N more" tail. */
+    private static final int TAIL_RESERVE = 24;
 
     private Formatting() {
     }
@@ -62,6 +66,38 @@ public final class Formatting {
             }
         }
         return out.toString();
+    }
+
+    /**
+     * A run of user mentions for a message <strong>body</strong>.
+     *
+     * <p>The body specifically, because Discord only notifies people for mentions in
+     * message content — the identical {@code <@id>} inside an embed renders as a name
+     * and pings nobody. Anything whose job is to tell members their silver moved has to
+     * put them here rather than in the embed that describes it.
+     *
+     * <p>Message content caps at 2000 characters and a CTA can credit far more people
+     * than fit, so the list is cut to {@code budget} characters and says how many names
+     * it left out. Everyone is still credited; only the ping is truncated.
+     */
+    public static String mentions(Collection<Long> discordUserIds, int budget) {
+        StringBuilder out = new StringBuilder();
+        int listed = 0;
+        for (Long userId : discordUserIds) {
+            String next = "<@" + userId + "> ";
+            // Reserve room for the tail, or a list that only just fits loses the count
+            // of the people it dropped.
+            if (out.length() + next.length() + TAIL_RESERVE > budget) {
+                break;
+            }
+            out.append(next);
+            listed++;
+        }
+        int remaining = discordUserIds.size() - listed;
+        if (remaining > 0) {
+            out.append("…and ").append(remaining).append(" more");
+        }
+        return out.toString().trim();
     }
 
     /** Neutralises Discord markdown so names cannot break embed formatting. */

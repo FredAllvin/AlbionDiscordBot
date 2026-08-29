@@ -101,15 +101,22 @@ public class BalanceService {
      * {@code /balance add}. The amount is <strong>per member</strong>, not a total to
      * divide between them.
      *
-     * <p>No batch reference, unlike {@link #creditSplit}: a staff adjustment applies
-     * immediately and has no preview to confirm, so there is no token to claim and
-     * nothing for {@code /undo} to find. {@link #removeEach} over the same mentions is
-     * the way back.
+     * <p>There is no claim token, unlike {@link #creditSplit}: a staff adjustment applies
+     * immediately and has no preview to confirm, so there is nothing to claim and
+     * {@link #removeEach} over the same mentions is the way back rather than
+     * {@code /undo}.
      *
-     * @return each member's resulting balance, keyed by user id
+     * <p>There <em>is</em> a batch reference. Without one, the rows a single command wrote
+     * were only findable by their timestamp, so "did that {@code /balance add} reach all
+     * five of them?" could not be answered from the ledger at all — which is exactly the
+     * question asked after someone says they were not paid. {@code /undo} still declines
+     * these batches, on purpose; the reference is what makes them reconstructable, not
+     * what makes them reversible.
+     *
+     * @return the batch reference and each member's resulting balance
      */
     @Transactional
-    public Map<Long, Long> addEach(
+    public BulkResult addEach(
             long guildId, Collection<Long> userIds, long amount, long actorId, String note) {
         // Ascending user id, for the same reason give() orders its two rows that way: two
         // officers crediting overlapping groups at the same moment would otherwise each
@@ -119,11 +126,13 @@ public class BalanceService {
             throw new CommandException("There is nobody to credit.");
         }
 
+        String batchId = UUID.randomUUID().toString();
         Map<Long, Long> after = dao.creditEach(guildId, recipients, amount);
         after.forEach((userId, balanceAfter) -> ledger.save(
                 new BalanceTransaction(guildId, userId, actorId, TransactionType.ADD, amount, balanceAfter)
+                        .withReference(batchId)
                         .withNote(note)));
-        return after;
+        return new BulkResult(batchId, after);
     }
 
     /**
@@ -135,10 +144,10 @@ public class BalanceService {
      * it and quietly skipping the rest would leave an officer to reconstruct from the
      * ledger which half of a correction actually landed.
      *
-     * @return each member's resulting balance, keyed by user id
+     * @return the batch reference and each member's resulting balance
      */
     @Transactional
-    public Map<Long, Long> removeEach(
+    public BulkResult removeEach(
             long guildId, Collection<Long> userIds, long amount, long actorId, String note) {
         Set<Long> targets = new TreeSet<>(userIds);
         if (targets.isEmpty()) {
@@ -167,10 +176,12 @@ public class BalanceService {
                             .collect(Collectors.joining(", "))));
         }
 
+        String batchId = UUID.randomUUID().toString();
         after.forEach((userId, balanceAfter) -> ledger.save(
                 new BalanceTransaction(guildId, userId, actorId, TransactionType.REMOVE, -amount, balanceAfter)
+                        .withReference(batchId)
                         .withNote(note)));
-        return after;
+        return new BulkResult(batchId, after);
     }
 
     @Transactional
@@ -391,6 +402,20 @@ public class BalanceService {
         }
 
         return new UndoResult(batchId, entries.size(), moved, wentNegative, wasCashout);
+    }
+
+    /**
+     * One {@code /balance add} or {@code /balance remove} over any number of members.
+     *
+     * @param batchId ties every row the command wrote together in the ledger, so the
+     *     question "how many people did that one actually reach?" has an answer
+     * @param after each member's resulting balance, keyed by user id
+     */
+    public record BulkResult(String batchId, Map<Long, Long> after) {
+
+        public int memberCount() {
+            return after.size();
+        }
     }
 
     public record SplitResult(String batchId, int recipientCount, long amountEach, long totalCredited) {

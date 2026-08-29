@@ -48,7 +48,7 @@ public class SplitCommand implements SlashCommand {
     }
 
     @Override
-    public boolean ephemeral() {
+    public boolean ephemeral(SlashCommandInteractionEvent event) {
         // The preview is private so nobody else can click the buttons; the confirmed
         // result is announced publicly afterwards.
         return true;

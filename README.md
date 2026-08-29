@@ -116,6 +116,25 @@ Then members can `/register <their character name>`.
 Amounts accept `1m`, `1.5m`, `500k`, `1kk`, `1,000,000` and `1000000`. The parsed value
 is always echoed back.
 
+### Who sees what
+
+Replies land in the channel the command was typed in, visible to everyone:
+
+| Visible to the channel | Visible only to the caller |
+| --- | --- |
+| `/register`, `/unregister` | `/setup`, `/status`, `/guild`, `/role add` |
+| `/balance check`, `/balance history`, `/balance give` | `/balance remove`, `/balance reset` |
+| `/balance add` — and it @s whoever was credited | `/force-register`, `/flush-unregistered` |
+| `/stats`, `/disarray`, `/undo` | The `/split`, `/split-cta` and `/payout` **previews** |
+| The `/split`, `/split-cta` and `/payout` **results** | `/balance stats`, unless `public: true` |
+
+The split is deliberate: silver arriving is guild news and the people it reached are
+pinged, while silver being taken back is a correction that belongs in the audit log rather
+than in a channel. Previews stay private because they carry buttons only their author may
+press, and because nothing has moved yet — announcing a payment before it exists is how
+you get asked about one that never happened. Errors are always private, whichever side of
+the table the command sits on.
+
 ### Split and payout run in opposite directions
 
 **`/split` puts silver on the books.** A share of loot is credited to each member's
@@ -176,21 +195,41 @@ take as many mentions as you like, and the amount is per member:
 /balance add members:@a @b @c amount:1m reason:hg    ← 1,000,000 each, 3,000,000 in total
 ```
 
-Type `@` inside the `members` box and pick each name from the autocomplete — a typed-out
-name is just text and will not be counted. Mentioning someone twice still pays them once.
+Type `@` inside the `members` box and pick each name from the autocomplete. Pasting
+mention text in, or re-running an older command from your history, produces something that
+*looks* like a mention and renders like one but that Discord never resolved — and an
+unresolved mention names nobody. **The command refuses outright if any mention fails to
+resolve**, naming the ones it could not place and changing nothing for anyone, rather than
+paying the rest and reporting a smaller number than you typed. Mentioning someone twice
+still pays them once.
 
-The difference from `/split` is that an adjustment lands immediately: no preview, no batch
-id, so `/undo` has nothing to reverse. `/balance remove` over the same mentions is the way
-back, and it is all-or-nothing — if one of them cannot cover it, nobody is touched and the
-message says who was short. Use `/split` on a role when the group is big enough that you
-want to see the list before it lands.
+The difference from `/split` is that an adjustment lands immediately: no preview and no
+confirmation, and `/undo` does not reverse one — `/balance remove` over the same mentions
+is the way back. The debit is all-or-nothing too: if one of them cannot cover it, nobody is
+touched and the message says who was short. Use `/split` on a role when the group is big
+enough that you want to see the list before it lands.
+
+Every row one command writes shares a batch id, recorded in the ledger and in the log
+channel. It is not something `/undo` accepts; it is what answers "did that one `/balance
+add` actually reach all five of them?" months later:
+
+```sql
+SELECT reference, count(*), array_agg(discord_user_id)
+FROM balance_transaction WHERE type = 'ADD' GROUP BY reference;
+```
 
 ### Both ask before they move anything
 
 `/split`, `/split-cta` and `/payout` all show a private preview — who is affected and
 what each balance becomes — with **Confirm**, **Deny** and **📋 Copy list**. Nothing moves
-until Confirm, and only whoever ran the command can press it. The result is then
-announced publicly.
+until Confirm, and only whoever ran the command can press it.
+
+The **result** is then posted publicly in the channel, and it **@s everyone it paid**. The
+mentions go in the message body rather than the embed on purpose: Discord only notifies
+people for mentions in the body, and a member who is never told they were paid is most of
+the way to believing they were not. A cashout pings only the people who were actually owed
+something, never the ones it skipped. Very large splits ping as many as a 2000-character
+message holds and then say how many more there were — everyone is still credited.
 
 **📋 Copy list** prints character name and full balance owed as a code block, which
 Discord renders with its own copy button. This is the list an officer types from while

@@ -42,7 +42,7 @@ public class DisarrayCommand implements SlashCommand {
     }
 
     @Override
-    public boolean ephemeral() {
+    public boolean ephemeral(SlashCommandInteractionEvent event) {
         return false;
     }
 

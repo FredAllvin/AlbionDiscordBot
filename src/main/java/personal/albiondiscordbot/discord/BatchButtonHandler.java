@@ -2,10 +2,12 @@ package personal.albiondiscordbot.discord;
 
 import java.awt.Color;
 import java.nio.charset.StandardCharsets;
+import java.util.EnumSet;
 import java.util.List;
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.components.actionrow.ActionRow;
 import net.dv8tion.jda.api.entities.Member;
+import net.dv8tion.jda.api.entities.Message;
 import net.dv8tion.jda.api.entities.MessageEmbed;
 import net.dv8tion.jda.api.entities.Role;
 import net.dv8tion.jda.api.events.interaction.component.ButtonInteractionEvent;
@@ -32,6 +34,9 @@ public class BatchButtonHandler implements ButtonHandler {
 
     /** Discord messages cap at 2000 characters; longer lists go out as a file. */
     private static final int INLINE_COPY_LIMIT = 1850;
+
+    /** Same 2000-character cap, spent on mentions instead. A big CTA overruns it. */
+    private static final int PING_BUDGET = 1800;
 
     private final BatchConfirmationService batches;
     private final AuditLogService auditLog;
@@ -98,6 +103,10 @@ public class BatchButtonHandler implements ButtonHandler {
 
         MessageEmbed done;
         MessageEmbed announcement;
+        // Who the public announcement pings. Populated per branch because a split reaches
+        // everyone resolved while a cashout reaches only those who were actually owed
+        // something — pinging the rest would tell them about a payment they did not get.
+        List<Long> notify;
 
         if (BatchConfirmationService.OP_CASHOUT.equals(op)) {
             BalanceService.CashoutResult result = batches.executeCashout(
@@ -130,6 +139,7 @@ public class BatchButtonHandler implements ButtonHandler {
                         true);
             }
             done = embed.build();
+            notify = List.copyOf(result.paid().keySet());
 
             announcement = new EmbedBuilder()
                     .setTitle("Cashout")
@@ -141,6 +151,10 @@ public class BatchButtonHandler implements ButtonHandler {
                                     result.paidCount(),
                                     result.paidCount() == 1 ? "" : "s",
                                     label))
+                    .addField("Total paid out", Formatting.silver(result.totalPaid()), true)
+                    .addField("Members", Integer.toString(result.paidCount()), true)
+                    // No "/undo" hint here, unlike the officer's copy: this one is read by
+                    // the whole guild and /undo is staff-only.
                     .setFooter("Batch " + result.batchId())
                     .build();
         } else {
@@ -168,6 +182,7 @@ public class BatchButtonHandler implements ButtonHandler {
                     .addField("Members", Integer.toString(result.recipientCount()), true)
                     .setFooter("Batch " + result.batchId() + " · reverse with /undo")
                     .build();
+            notify = recipients.stream().map(Recipient::discordUserId).toList();
 
             announcement = new EmbedBuilder()
                     .setTitle("Split")
@@ -179,7 +194,10 @@ public class BatchButtonHandler implements ButtonHandler {
                                     result.recipientCount(),
                                     result.recipientCount() == 1 ? "" : "s",
                                     label))
-                    .setFooter("Batch " + result.batchId())
+                    .addField("Each", Formatting.silver(result.amountEach()), true)
+                    .addField("Members", Integer.toString(result.recipientCount()), true)
+                    .addField("Total credited", Formatting.silver(result.totalCredited()), true)
+                    .setFooter("Batch " + result.batchId() + " · check yours with /balance check")
                     .build();
         }
 
@@ -196,8 +214,20 @@ public class BatchButtonHandler implements ButtonHandler {
                 .setComponents(remaining)
                 .queue();
 
-        // The preview is ephemeral, so announce the result where the guild can see it.
-        event.getChannel().sendMessageEmbeds(announcement).queue();
+        // The preview is ephemeral, so announce the result where the guild can see it,
+        // with everyone it affected named in the body. In the body specifically: the same
+        // mentions inside the embed would render as names and notify nobody, and being
+        // told is the difference between a member checking their balance and a member
+        // reporting that they were skipped.
+        //
+        // USER only. The label for a role split is a role mention, and it sits in the
+        // embed where it cannot ping — but nothing here should be one edit away from
+        // pinging a whole role on top of its members.
+        event.getChannel()
+                .sendMessage(Formatting.mentions(notify, PING_BUDGET))
+                .addEmbeds(announcement)
+                .setAllowedMentions(EnumSet.of(Message.MentionType.USER))
+                .queue();
     }
 
     private void deny(ButtonInteractionEvent event, String op) {

@@ -51,7 +51,7 @@ public class PayoutCommand implements SlashCommand {
     }
 
     @Override
-    public boolean ephemeral() {
+    public boolean ephemeral(SlashCommandInteractionEvent event) {
         return true;
     }
 

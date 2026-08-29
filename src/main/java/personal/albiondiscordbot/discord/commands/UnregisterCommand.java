@@ -47,6 +47,12 @@ public class UnregisterCommand implements SlashCommand {
         return "unregister";
     }
 
+    /** Public, for the same reason {@code /register} is: it changes who is who. */
+    @Override
+    public boolean ephemeral(SlashCommandInteractionEvent event) {
+        return false;
+    }
+
     @Override
     public SlashCommandData definition() {
         return Commands.slash("unregister", "Remove a registration (staff can unregister anyone)")

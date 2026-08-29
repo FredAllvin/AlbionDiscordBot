@@ -45,7 +45,7 @@ public class UndoCommand implements SlashCommand {
     }
 
     @Override
-    public boolean ephemeral() {
+    public boolean ephemeral(SlashCommandInteractionEvent event) {
         return false;
     }
 

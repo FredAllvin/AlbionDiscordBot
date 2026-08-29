@@ -4,7 +4,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.List;
-import java.util.Map;
 import net.dv8tion.jda.api.JDA;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -72,10 +71,10 @@ class BulkAdjustmentTest extends PostgresTestBase {
     @Test
     @DisplayName("every mention gets the full amount, not a share of it")
     void creditsEachMentionInFull() {
-        Map<Long, Long> after =
+        BalanceService.BulkResult result =
                 balances.addEach(GUILD, List.of(ALICE, BOB, CARL), 1_000_000L, OFFICER, "hellgate");
 
-        assertThat(after).containsOnlyKeys(ALICE, BOB, CARL).containsValues(1_000_000L);
+        assertThat(result.after()).containsOnlyKeys(ALICE, BOB, CARL).containsValues(1_000_000L);
         assertThat(balances.balanceOf(GUILD, ALICE)).isEqualTo(1_000_000L);
         assertThat(balances.balanceOf(GUILD, BOB)).isEqualTo(1_000_000L);
         assertThat(balances.balanceOf(GUILD, CARL)).isEqualTo(1_000_000L);
@@ -87,7 +86,26 @@ class BulkAdjustmentTest extends PostgresTestBase {
                     assertThat(entry.getType()).isEqualTo(TransactionType.ADD);
                     assertThat(entry.getDelta()).isEqualTo(1_000_000L);
                     assertThat(entry.getNote()).isEqualTo("hellgate");
+                    // The reference is what makes "did that one command reach all three?"
+                    // answerable from the ledger months later.
+                    assertThat(entry.getReference()).isEqualTo(result.batchId());
                 });
+    }
+
+    @Test
+    @DisplayName("one command writes one batch, and two commands write two")
+    void tagsEveryRowOfOneCommandWithTheSameBatch() {
+        BalanceService.BulkResult first =
+                balances.addEach(GUILD, List.of(ALICE, BOB, CARL), 1_000_000L, OFFICER, null);
+        BalanceService.BulkResult second =
+                balances.addEach(GUILD, List.of(ALICE, BOB), 500_000L, OFFICER, null);
+
+        assertThat(first.batchId()).isNotEqualTo(second.batchId());
+        assertThat(ledger.findByReference(first.batchId()))
+                .hasSize(3)
+                .extracting(BalanceTransaction::getDiscordUserId)
+                .containsExactlyInAnyOrder(ALICE, BOB, CARL);
+        assertThat(ledger.findByReference(second.batchId())).hasSize(2);
     }
 
     @Test
