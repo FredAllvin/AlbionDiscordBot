@@ -93,6 +93,8 @@ Then members can `/register <their character name>`.
 |---|---|---|
 | `/setup` | Admin | Staff role, verified role, log + killboard channels, CTA threshold |
 | `/disarray <level>` | Everyone | How many players a Disarray level means, e.g. `45` → `154-159` |
+| `/objective add <name> <HH:MM>` | Everyone | Put something on the board at a UTC time |
+| `/objective show` | Everyone | The board, soonest first. Objectives drop off 30 minutes after they pop |
 | `/register <name>` | Everyone | Claim a character; verified against the live API |
 | `/unregister [@user]` | Self / staff | Remove a registration |
 | `/force-register @user <name>` | Staff | Register without verifying guild membership |
@@ -116,6 +118,28 @@ Then members can `/register <their character name>`.
 Amounts accept `1m`, `1.5m`, `500k`, `1kk`, `1,000,000` and `1000000`. The parsed value
 is always echoed back.
 
+### The objective board
+
+`/objective add name:Fort Sterling chest time:20:00` puts one line on a shared board that
+anyone can read with `/objective show`. Times are **UTC**, in `HH:MM`, two digits either
+side — `08:05`, not `8:5`. That is how Albion publishes its timers, and UTC has no
+daylight saving to move an objective by an hour twice a year.
+
+`HH:MM` is a time of day and not a date, so it is resolved on the way in to the next time
+it is that time: `20:00` typed at 18:00 is tonight, and typed at 22:00 it is tomorrow's —
+the reply says so when it rolls over. The board is then ordered by the actual moment
+rather than by the digits, which is the only ordering that survives midnight: at 23:55,
+`00:10` is fifteen minutes away and `23:50` is five minutes past.
+
+An objective stays up for **30 minutes after it pops**, marked 🔴, and is then deleted.
+The window is not zero on purpose — a chest that popped ten minutes ago is the most useful
+line on the board, because it is where everyone already is. Nothing sweeps on a timer;
+the list is cleaned whenever somebody reads or writes it, so a restart cannot leave stale
+entries behind.
+
+Each line carries a Discord timestamp as well as the UTC time, so everyone reads it in
+their own timezone with a live countdown attached.
+
 ### Who sees what
 
 Replies land in the channel the command was typed in, visible to everyone:
@@ -126,6 +150,7 @@ Replies land in the channel the command was typed in, visible to everyone:
 | `/balance check`, `/balance history`, `/balance give` | `/balance remove`, `/balance reset` |
 | `/balance add` — and it @s whoever was credited | `/force-register`, `/flush-unregistered` |
 | `/stats`, `/disarray`, `/undo` | The `/split`, `/split-cta` and `/payout` **previews** |
+| `/objective add`, `/objective show` | |
 | The `/split`, `/split-cta` and `/payout` **results** | `/balance stats`, unless `public: true` |
 
 The split is deliberate: silver arriving is guild news and the people it reached are
