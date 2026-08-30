@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.IntFunction;
 import java.util.stream.Collectors;
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.components.buttons.Button;
@@ -60,7 +61,11 @@ public class BatchConfirmationService {
     /** Several battles, looked up by key from {@code split_battle_group}. */
     public static final String SOURCE_BATTLES = "bs";
 
-    /** Rows shown inline before the list is truncated in favour of the copy button. */
+    /**
+     * Rows shown inline before the list is truncated in favour of the copy button. Only
+     * ever the second of the two limits in {@link #fencedTable} to bite; the character
+     * budget is the one that has to hold.
+     */
     private static final int PREVIEW_ROWS = 25;
 
     private final BalanceService balances;
@@ -218,22 +223,18 @@ public class BatchConfirmationService {
                 .addField("Members", Integer.toString(recipients.size()), true)
                 .addField("Total credited", Formatting.silver(amountEach * recipients.size()), true);
 
-        StringBuilder table = new StringBuilder("```\n");
-        int shown = Math.min(recipients.size(), PREVIEW_ROWS);
-        for (int i = 0; i < shown; i++) {
-            Recipient recipient = recipients.get(i);
-            long current = balances.balanceOf(discordGuildId, recipient.discordUserId());
-            table.append(String.format(
-                    "%-20s %15s -> %15s%n",
-                    trim(recipient.label(), 20),
-                    Formatting.silver(current),
-                    Formatting.silver(current + amountEach)));
-        }
-        if (recipients.size() > shown) {
-            table.append("... and ").append(recipients.size() - shown).append(" more\n");
-        }
-        table.append("```");
-        embed.addField("Balances after this split", table.toString(), false);
+        embed.addField(
+                "Balances after this split",
+                fencedTable(recipients.size(), i -> {
+                    Recipient recipient = recipients.get(i);
+                    long current = balances.balanceOf(discordGuildId, recipient.discordUserId());
+                    return "%-20s %15s -> %15s\n"
+                            .formatted(
+                                    trim(recipient.label(), 20),
+                                    Formatting.silver(current),
+                                    Formatting.silver(current + amountEach));
+                }),
+                false);
 
         addUnregisteredNote(recipients, embed);
         embed.setFooter("Confirm to credit the balances, or Deny to cancel.");
@@ -273,24 +274,71 @@ public class BatchConfirmationService {
             embed.addField("Owed nothing", "%d skipped".formatted(skipped), true);
         }
 
-        StringBuilder table = new StringBuilder("```\n");
-        int shown = Math.min(owed.size(), PREVIEW_ROWS);
-        for (int i = 0; i < shown; i++) {
-            Recipient recipient = owed.get(i);
-            table.append(String.format(
-                    "%-20s %15s%n",
-                    trim(recipient.label(), 20),
-                    Formatting.silver(balances.balanceOf(discordGuildId, recipient.discordUserId()))));
-        }
-        if (owed.size() > shown) {
-            table.append("... and ").append(owed.size() - shown).append(" more\n");
-        }
-        table.append("```");
-        embed.addField("Send these amounts in game", table.toString(), false);
+        embed.addField(
+                "Send these amounts in game",
+                fencedTable(owed.size(), i -> {
+                    Recipient recipient = owed.get(i);
+                    return "%-20s %15s\n"
+                            .formatted(
+                                    trim(recipient.label(), 20),
+                                    Formatting.silver(
+                                            balances.balanceOf(discordGuildId, recipient.discordUserId())));
+                }),
+                false);
 
         addUnregisteredNote(owed, embed);
         embed.setFooter("Confirm once you have sent the silver, or Deny to cancel.");
         return embed.build();
+    }
+
+    /**
+     * A fenced table of at most {@code rows} rows that always fits inside an embed field.
+     *
+     * <p>The budget that matters is <strong>characters</strong>, not rows. Discord caps a
+     * field value at {@value MessageEmbed#VALUE_MAX_LENGTH} and JDA refuses to build a
+     * longer one, so counting only rows was not a cap at all: a split row is 56 characters
+     * wide and {@link #PREVIEW_ROWS} of them come to 1,407.
+     * Every CTA-sized {@code /split-cta} therefore died while building its own preview —
+     * the roster is dozens of people, the field went over on the 19th, and the officer got
+     * "Something went wrong running that command" with no silver credited and nothing to
+     * act on. The cashout table is two columns and came to 957, which is the only reason
+     * the identical row cap was survivable there.
+     *
+     * <p>Rows end in {@code \n} rather than {@code %n}: this is a Discord message, not
+     * console output, and on the Windows box this is developed on {@code %n} is two
+     * characters. That alone moved where the field overflowed.
+     *
+     * <p>The tail is reserved for before the rows are laid down, at its widest — it can
+     * only get shorter as more rows fit — so a table can never be one row away from
+     * overflowing on the sentence that admits it truncated.
+     */
+    private static String fencedTable(int rows, IntFunction<String> rowAt) {
+        String open = "```\n";
+        String close = "```";
+        int budget = MessageEmbed.VALUE_MAX_LENGTH - open.length() - close.length();
+        int tailReserve = tail(rows).length();
+
+        StringBuilder body = new StringBuilder();
+        int shown = 0;
+        int limit = Math.min(rows, PREVIEW_ROWS);
+        for (int i = 0; i < limit; i++) {
+            String row = rowAt.apply(i);
+            // The last row of the whole list owes no room to a tail that will not be
+            // written, so a list that exactly fits is not truncated for the sake of
+            // saying it was.
+            int reserve = i == rows - 1 ? 0 : tailReserve;
+            if (body.length() + row.length() + reserve > budget) {
+                break;
+            }
+            body.append(row);
+            shown++;
+        }
+        return open + body + (shown < rows ? tail(rows - shown) : "") + close;
+    }
+
+    /** How a truncated table admits what it left out. Everyone omitted is still paid. */
+    private static String tail(int omitted) {
+        return "... and %d more\n".formatted(omitted);
     }
 
     private void addUnregisteredNote(List<Recipient> recipients, EmbedBuilder embed) {
