@@ -67,6 +67,19 @@ public class AuditLogService {
     }
 
     /**
+     * The destructive half of the objective board — an edit or a removal.
+     *
+     * <p>Additions are left out on purpose, the same way a balance going up is announced
+     * and one coming back down is logged. Anyone may put a line up and that announces
+     * itself; anyone may also take one down or move it, which is what keeps the board
+     * worth reading when intel turns out wrong, and the price of letting everybody do
+     * that is a durable record of who did.
+     */
+    public void objective(CommandContext context, String description) {
+        record(context, "Objective board", description, new Color(0x1ABC9C));
+    }
+
+    /**
      * Changes to who holds power or which in-game guild counts as ours.
      *
      * <p>These decide where silver ends up just as directly as a balance change does —

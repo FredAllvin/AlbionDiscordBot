@@ -67,6 +67,11 @@ public final class UtcTimeParser {
         return candidate.plusDays(1).toInstant();
     }
 
+    /** The UTC time of day {@code instant} falls on — the {@code HH:MM} it reads back as. */
+    public static LocalTime timeOf(Instant instant) {
+        return instant.atZone(ZoneOffset.UTC).toLocalTime();
+    }
+
     /**
      * Whether {@code instant} lands on a later UTC day than {@code now} does.
      *

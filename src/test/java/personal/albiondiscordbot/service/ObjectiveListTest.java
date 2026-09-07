@@ -68,7 +68,11 @@ class ObjectiveListTest extends PostgresTestBase {
     }
 
     private Objective add(String name, String time, Instant now) {
-        return objectives.add(GUILD, MEMBER, name, LocalTime.parse(time), now);
+        return add(name, null, time, now);
+    }
+
+    private Objective add(String name, String zone, String time, Instant now) {
+        return objectives.add(GUILD, MEMBER, name, zone, LocalTime.parse(time), now);
     }
 
     private List<String> namesAt(Instant now) {
@@ -144,7 +148,7 @@ class ObjectiveListTest extends PostgresTestBase {
     @DisplayName("one server's sweep leaves another server's board alone")
     void expiryIsScopedToOneServer() {
         add("Ours", "12:30", NOON);
-        objectives.add(OTHER_GUILD, MEMBER, "Theirs", LocalTime.of(12, 30), NOON);
+        objectives.add(OTHER_GUILD, MEMBER, "Theirs", null, LocalTime.of(12, 30), NOON);
 
         // Reading this server's board, well past the point both have expired.
         assertThat(namesAt(Instant.parse("2026-08-30T14:00:00Z"))).isEmpty();
@@ -182,6 +186,48 @@ class ObjectiveListTest extends PostgresTestBase {
         add("Fort Sterling chest", "20:00", NOON);
 
         assertThat(namesAt(NOON)).containsExactly("Fort Sterling chest", "Fort Sterling chest");
+    }
+
+    @Test
+    @DisplayName("the same name in another zone is a different objective, at the same minute")
+    void allowsTheSameNameInAnotherZone() {
+        // The reason the zone had to join the key. With a zone to put it in, the name
+        // shortens to "Chest", and two cities' chests can pop in the same minute.
+        add("Chest", "Fort Sterling", "20:00", NOON);
+        add("Chest", "Martlock", "20:00", NOON);
+
+        assertThat(objectives.list(GUILD, NOON))
+                .extracting(Objective::getZone)
+                .containsExactlyInAnyOrder("Fort Sterling", "Martlock");
+    }
+
+    @Test
+    @DisplayName("the same name in the same zone is refused, whatever the casing of either")
+    void refusesADuplicateInTheSameZone() {
+        add("Chest", "Fort Sterling", "20:00", NOON);
+
+        assertThatThrownBy(() -> add("CHEST", "fort sterling", "20:00", NOON))
+                .isInstanceOf(CommandException.class)
+                .hasMessageContaining("already on the list");
+    }
+
+    @Test
+    @DisplayName("a blank zone is no zone, so the duplicate check still catches a zoneless repeat")
+    void treatsABlankZoneAsNoZone() {
+        // Postgres counts NULLs in a unique index as distinct from each other, so this is
+        // the case coalesce(zone, '') exists for — and it is the common one, not an edge.
+        Objective saved = add("Chest", "   ", "20:00", NOON);
+        assertThat(saved.getZone()).isNull();
+
+        assertThatThrownBy(() -> add("Chest", "20:00", NOON))
+                .isInstanceOf(CommandException.class)
+                .hasMessageContaining("already on the list");
+    }
+
+    @Test
+    @DisplayName("the zone is stored as it was typed, trimmed")
+    void keepsTheZoneAsTyped() {
+        assertThat(add("Chest", "  Fort Sterling  ", "20:00", NOON).getZone()).isEqualTo("Fort Sterling");
     }
 
     @Test

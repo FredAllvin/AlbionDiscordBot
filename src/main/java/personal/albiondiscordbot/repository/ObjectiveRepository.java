@@ -28,10 +28,36 @@ public interface ObjectiveRepository extends JpaRepository<Objective, Long> {
     int deleteExpired(@Param("discordGuildId") Long discordGuildId, @Param("cutoff") Instant cutoff);
 
     /**
-     * Backs the friendly duplicate message. {@code ux_objective_name_time} is what
-     * actually enforces it — two people relaying the same intel at the same moment both
-     * pass this check.
+     * Whether some other line already holds this slot: same name, same zone, same instant.
+     *
+     * <p>Backs the friendly duplicate message. {@code ux_objective_slot} is what actually
+     * enforces it — two people relaying the same intel at the same moment both pass this
+     * check — so the expressions here are written to mirror that index exactly, {@code
+     * lower()} and {@code coalesce()} included, or the check would pass things the insert
+     * then refuses and the user would get the generic failure instead of the good message.
+     *
+     * <p>Both sides are lowered by Postgres rather than by the caller, so the comparison
+     * cannot drift from the index over a locale Java and the database disagree about.
+     *
+     * @param zone the empty string when there is no zone, never {@code null}: a NULL
+     *     parameter would compare unequal to everything, including the NULL column it is
+     *     meant to match, and every zoneless duplicate would slip past
+     * @param excludeId the row being edited, so an edit that leaves part of a line alone
+     *     does not collide with itself; {@code 0} when adding, which no generated id takes
      */
-    boolean existsByDiscordGuildIdAndNameIgnoreCaseAndPopsAt(
-            Long discordGuildId, String name, Instant popsAt);
+    @Query(
+            """
+            SELECT COUNT(o) > 0 FROM Objective o
+            WHERE o.discordGuildId = :discordGuildId
+              AND lower(o.name) = lower(:name)
+              AND lower(COALESCE(o.zone, '')) = lower(:zone)
+              AND o.popsAt = :popsAt
+              AND o.id <> :excludeId
+            """)
+    boolean slotTaken(
+            @Param("discordGuildId") long discordGuildId,
+            @Param("name") String name,
+            @Param("zone") String zone,
+            @Param("popsAt") Instant popsAt,
+            @Param("excludeId") long excludeId);
 }

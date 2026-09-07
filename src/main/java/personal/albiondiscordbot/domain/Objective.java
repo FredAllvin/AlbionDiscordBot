@@ -19,6 +19,11 @@ import java.time.ZoneOffset;
  * 23:55 UTC a 00:10 objective is fifteen minutes off and a 23:50 one is five minutes
  * past, and today's 20:00 an hour ago looks exactly like tomorrow's. The typed time is
  * recovered for display with {@link #popsAtUtc()}.
+ *
+ * <p>Name, zone and instant together are what make one objective distinct from another,
+ * which {@code ux_objective_slot} enforces. {@link #getZone()} is optional and holds no
+ * meaning of its own — nothing looks a zone up or matches it against the game — so it
+ * takes whatever the guild calls the place.
  */
 @Entity
 @Table(name = "objective")
@@ -34,6 +39,10 @@ public class Objective {
     @Column(name = "name", nullable = false, length = 100)
     private String name;
 
+    /** Where it is, or {@code null}. Never blank — the service folds blank to absent. */
+    @Column(name = "zone", length = 60)
+    private String zone;
+
     @Column(name = "pops_at", nullable = false)
     private Instant popsAt;
 
@@ -47,9 +56,10 @@ public class Objective {
         // for JPA
     }
 
-    public Objective(Long discordGuildId, String name, Instant popsAt, Long addedByDiscordUserId) {
+    public Objective(Long discordGuildId, String name, String zone, Instant popsAt, Long addedByDiscordUserId) {
         this.discordGuildId = discordGuildId;
         this.name = name;
+        this.zone = zone;
         this.popsAt = popsAt;
         this.addedByDiscordUserId = addedByDiscordUserId;
     }
@@ -66,8 +76,24 @@ public class Objective {
         return name;
     }
 
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    public String getZone() {
+        return zone;
+    }
+
+    public void setZone(String zone) {
+        this.zone = zone;
+    }
+
     public Instant getPopsAt() {
         return popsAt;
+    }
+
+    public void setPopsAt(Instant popsAt) {
+        this.popsAt = popsAt;
     }
 
     /** The {@code HH:MM} UTC this was added as. */

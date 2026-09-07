@@ -93,8 +93,10 @@ Then members can `/register <their character name>`.
 |---|---|---|
 | `/setup` | Admin | Staff role, verified role, log + killboard channels, CTA threshold |
 | `/disarray <level>` | Everyone | How many players a Disarray level means, e.g. `45` → `154-159` |
-| `/objective add <name> <HH:MM>` | Everyone | Put something on the board at a UTC time |
+| `/objective add <name> <HH:MM> [zone]` | Everyone | Put something on the board at a UTC time |
 | `/objective show` | Everyone | The board, soonest first. Objectives drop off 30 minutes after they pop |
+| `/objective edit <name> [new_name] [new_time] [new_zone]` | Everyone | Fix a line that is wrong |
+| `/objective remove <name>` | Everyone | Take a line off the board |
 | `/register <name>` | Everyone | Claim a character; verified against the live API |
 | `/unregister [@user]` | Self / staff | Remove a registration |
 | `/force-register @user <name>` | Staff | Register without verifying guild membership |
@@ -140,6 +142,29 @@ entries behind.
 Each line carries a Discord timestamp as well as the UTC time, so everyone reads it in
 their own timezone with a live countdown attached.
 
+`zone:` is optional and holds whatever the guild calls the place — nothing looks it up or
+checks it against the game. It exists because with a zone to put it in the name shortens
+to "Chest", and *that* changes what counts as the same objective: Fort Sterling's chest
+and Martlock's can pop in the same minute, so name, zone and time together are what has to
+be unique. Leaving the zone off is still one board-wide slot per name and time, so two
+people calling the same thing cannot put it up twice.
+
+### Fixing the board
+
+`/objective edit name:Chest new_time:21:00` moves a line; `new_name:` renames it,
+`new_zone:` sets the zone and `new_zone:-` takes the zone back off. `/objective remove
+name:Chest` clears the line entirely. Both name a line the way the guild does — by what it
+is called, casing ignored — and both are open to everyone, exactly as `/objective add` is.
+A line that is wrong is worse than no line, and whoever spots it is hardly ever whoever
+typed it, so waiting for its author or for an officer gives up what the board is for. Both
+go to the log channel, which is where the record of who moved what lives afterwards.
+
+When a name is up more than once, nothing is picked for you: the command refuses and
+prints the candidates, and `time:` or `zone:` says which one is meant. A new time is
+resolved like an added one, so correcting an objective to a time that has already gone by
+moves it to tomorrow rather than into the past, where the next sweep would delete it and
+take the correction with it.
+
 ### Who sees what
 
 Replies land in the channel the command was typed in, visible to everyone:
@@ -150,15 +175,18 @@ Replies land in the channel the command was typed in, visible to everyone:
 | `/balance check`, `/balance history`, `/balance give` | `/balance remove`, `/balance reset` |
 | `/balance add` — and it @s whoever was credited | `/force-register`, `/flush-unregistered` |
 | `/stats`, `/disarray`, `/undo` | The `/split`, `/split-cta` and `/payout` **previews** |
-| `/objective add`, `/objective show` | |
+| Every `/objective` subcommand | |
 | The `/split`, `/split-cta` and `/payout` **results** | `/balance stats`, unless `public: true` |
 
 The split is deliberate: silver arriving is guild news and the people it reached are
 pinged, while silver being taken back is a correction that belongs in the audit log rather
-than in a channel. Previews stay private because they carry buttons only their author may
-press, and because nothing has moved yet — announcing a payment before it exists is how
-you get asked about one that never happened. Errors are always private, whichever side of
-the table the command sits on.
+than in a channel. `/objective remove` goes the other way for the opposite reason —
+silver coming back is settled by the ledger, but an objective coming down is only settled
+by everyone knowing, and somebody already walking to that chest has to hear about it in
+the channel they read it in. Previews stay private because they carry buttons only their
+author may press, and because nothing has moved yet — announcing a payment before it
+exists is how you get asked about one that never happened. Errors are always private,
+whichever side of the table the command sits on.
 
 ### Split and payout run in opposite directions
 
