@@ -32,4 +32,29 @@ public class AsyncConfig {
         executor.initialize();
         return executor;
     }
+
+    /**
+     * Runs autocomplete lookups, off the gateway threads and off {@link #commandExecutor()}.
+     *
+     * <p>Its own pool because the two have opposite shapes. A slash command may spend
+     * twenty seconds inside the Albion API while the caller watches a "thinking"
+     * placeholder; an autocomplete fires once per keystroke, cannot be deferred, and is
+     * discarded by Discord after three seconds. Sharing a queue would put the one with a
+     * deadline behind up to two hundred of the ones without — at exactly the moment
+     * somebody is typing, since a busy bot is a bot people are using.
+     */
+    @Bean("autoCompleteExecutor")
+    public Executor autoCompleteExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(2);
+        executor.setMaxPoolSize(4);
+        // Short on purpose. A suggestion that cannot be delivered inside three seconds is
+        // worth less than the queue slot it is sitting in.
+        executor.setQueueCapacity(50);
+        executor.setThreadNamePrefix("ac-");
+        executor.setRejectedExecutionHandler(
+                new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
+        executor.initialize();
+        return executor;
+    }
 }

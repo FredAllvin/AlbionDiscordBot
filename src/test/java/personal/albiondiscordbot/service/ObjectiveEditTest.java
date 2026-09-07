@@ -75,7 +75,7 @@ class ObjectiveEditTest extends PostgresTestBase {
     }
 
     private static Selector named(String name) {
-        return new Selector(name, null, null);
+        return Selector.typed(name, null, null);
     }
 
     private Edited edit(Selector selector, Change change) {
@@ -160,8 +160,8 @@ class ObjectiveEditTest extends PostgresTestBase {
         add("Chest", "Fort Sterling", "20:00");
         add("Chest", "Martlock", "20:00");
 
-        assertThatThrownBy(() -> objectives.edit(
-                        GUILD, new Selector("Chest", null, "Martlock"), new Change(null, null, "fort sterling"), NOON))
+        assertThatThrownBy(() -> edit(
+                        Selector.typed("Chest", null, "Martlock"), new Change(null, null, "fort sterling")))
                 .isInstanceOf(CommandException.class)
                 .hasMessageContaining("already on the list");
 
@@ -292,7 +292,7 @@ class ObjectiveEditTest extends PostgresTestBase {
         add("Chest", null, "20:00");
         add("Chest", null, "21:00");
 
-        objectives.remove(GUILD, new Selector("Chest", LocalTime.of(21, 0), null), NOON);
+        objectives.remove(GUILD, Selector.typed("Chest", LocalTime.of(21, 0), null), NOON);
 
         assertThat(objectives.list(GUILD, NOON))
                 .singleElement()
@@ -306,7 +306,7 @@ class ObjectiveEditTest extends PostgresTestBase {
         add("Chest", "Fort Sterling", "20:00");
         add("Chest", "Martlock", "20:00");
 
-        objectives.remove(GUILD, new Selector("Chest", null, "martlock"), NOON);
+        objectives.remove(GUILD, Selector.typed("Chest", null, "martlock"), NOON);
 
         assertThat(objectives.list(GUILD, NOON))
                 .singleElement()
@@ -324,7 +324,7 @@ class ObjectiveEditTest extends PostgresTestBase {
         // day is what the board shows, but resolving "12:30" against now would give
         // tomorrow's 12:30 and find nothing — the selector matches the printed time.
         Instant tenPast = Instant.parse("2026-08-30T12:40:00Z");
-        objectives.remove(GUILD, new Selector("Chest", LocalTime.of(12, 30), null), tenPast);
+        objectives.remove(GUILD, Selector.typed("Chest", LocalTime.of(12, 30), null), tenPast);
 
         assertThat(objectives.list(GUILD, tenPast))
                 .singleElement()
@@ -337,10 +337,96 @@ class ObjectiveEditTest extends PostgresTestBase {
     void refusesTheWrongTime() {
         add("Chest", null, "20:00");
 
-        assertThatThrownBy(() -> objectives.remove(GUILD, new Selector("Chest", LocalTime.of(21, 0), null), NOON))
+        assertThatThrownBy(() -> objectives.remove(GUILD, Selector.typed("Chest", LocalTime.of(21, 0), null), NOON))
                 .isInstanceOf(CommandException.class)
                 .hasMessageContaining("but not at `21:00` UTC")
                 .hasMessageContaining("`20:00` UTC");
+    }
+
+    @Test
+    @DisplayName("the picker names one row, whatever else shares its name")
+    void editsThePickedRow() {
+        add("Chest", "Fort Sterling", "20:00");
+        Objective martlock = add("Chest", "Martlock", "20:00");
+
+        // A typed "Chest" is ambiguous here and would be refused. An id is not.
+        Edited edited = edit(Selector.picked(martlock.getId()), new Change(null, LocalTime.of(21, 0), null));
+
+        assertThat(edited.objective().getZone()).isEqualTo("Martlock");
+        assertThat(edited.objective().popsAtUtc()).isEqualTo(LocalTime.of(21, 0));
+    }
+
+    @Test
+    @DisplayName("a picked row that has gone since says so, rather than reporting nothing by that name")
+    void refusesAPickedRowThatIsGone() {
+        Objective chest = add("Chest", null, "12:30");
+
+        // The picker listed it, then it expired while the caller was still choosing.
+        assertThatThrownBy(() -> objectives.edit(
+                        GUILD,
+                        Selector.picked(chest.getId()),
+                        new Change("Fort Sterling chest", null, null),
+                        Instant.parse("2026-08-30T14:00:00Z")))
+                .isInstanceOf(CommandException.class)
+                .hasMessageContaining("not on the list any more");
+    }
+
+    @Test
+    @DisplayName("a row id from another server's board matches nothing")
+    void refusesAPickedRowFromAnotherServer() {
+        Objective theirs = objectives.add(OTHER_GUILD, MEMBER, "Chest", null, LocalTime.of(20, 0), NOON);
+
+        assertThatThrownBy(() -> edit(Selector.picked(theirs.getId()), new Change("Ours", null, null)))
+                .isInstanceOf(CommandException.class)
+                .hasMessageContaining("not on the list any more");
+
+        assertThat(repository.findAll()).extracting(Objective::getName).containsExactly("Chest");
+    }
+
+    @Test
+    @DisplayName("a name typed instead of picked still works")
+    void stillAcceptsATypedName() {
+        // Discord lets an autocompleting option be submitted with whatever is in the box,
+        // so the name path has to stay live behind the picker.
+        add("Chest", null, "20:00");
+
+        assertThat(edit(named("chest"), new Change(null, null, "Martlock"))
+                        .objective()
+                        .getZone())
+                .isEqualTo("Martlock");
+    }
+
+    @Test
+    @DisplayName("an ambiguous typed name points at the picker, not at time: and zone:")
+    void ambiguityTellsEditToPick() {
+        add("Chest", "Fort Sterling", "20:00");
+        add("Chest", "Martlock", "20:00");
+
+        assertThatThrownBy(() -> edit(named("Chest"), new Change(null, LocalTime.of(21, 0), null)))
+                .isInstanceOf(CommandException.class)
+                .hasMessageContaining("Pick it from the list");
+
+        // remove has no picker, so it still says how to narrow it.
+        assertThatThrownBy(() -> objectives.remove(GUILD, named("Chest"), NOON))
+                .isInstanceOf(CommandException.class)
+                .hasMessageContaining("Add `time:` or `zone:`");
+    }
+
+    @Test
+    @DisplayName("the picker reads the board without sweeping it")
+    void visibleDoesNotWrite() {
+        add("Chest", null, "12:30");
+        add("Evening cta", null, "20:00");
+
+        // Well past the grace window for the first one. It must not be offered...
+        Instant late = Instant.parse("2026-08-30T14:00:00Z");
+        assertThat(objectives.visible(GUILD, late)).extracting(Objective::getName).containsExactly("Evening cta");
+
+        // ...but it must not be deleted either: this runs on every keystroke, and a sweep
+        // is a write. The next real read of the board is what clears it.
+        assertThat(repository.count()).isEqualTo(2);
+        assertThat(objectives.list(GUILD, late)).hasSize(1);
+        assertThat(repository.count()).isEqualTo(1);
     }
 
     @Test

@@ -1,9 +1,13 @@
 package personal.albiondiscordbot.discord;
 
+import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
+import net.dv8tion.jda.api.events.interaction.command.CommandAutoCompleteInteractionEvent;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
+import net.dv8tion.jda.api.interactions.commands.Command;
+import net.dv8tion.jda.api.interactions.commands.build.OptionData;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -24,6 +28,10 @@ import personal.albiondiscordbot.service.GuildConfigService;
  *       thread</strong>. Blocking the gateway thread stalls the entire bot — every
  *       other server's commands included — so this handoff is mandatory.
  * </ol>
+ *
+ * <p>Autocomplete arrives here too, and gets neither of those: it cannot be deferred at
+ * all, and it runs on a pool of its own rather than queueing behind commands that are
+ * allowed to take twenty seconds.
  */
 @Component
 public class SlashCommandListener extends ListenerAdapter {
@@ -34,16 +42,19 @@ public class SlashCommandListener extends ListenerAdapter {
     private final GuildConfigService guildConfigService;
     private final PermissionService permissionService;
     private final Executor executor;
+    private final Executor autoCompleteExecutor;
 
     public SlashCommandListener(
             CommandRegistry registry,
             GuildConfigService guildConfigService,
             PermissionService permissionService,
-            @Qualifier("commandExecutor") Executor executor) {
+            @Qualifier("commandExecutor") Executor executor,
+            @Qualifier("autoCompleteExecutor") Executor autoCompleteExecutor) {
         this.registry = registry;
         this.guildConfigService = guildConfigService;
         this.permissionService = permissionService;
         this.executor = executor;
+        this.autoCompleteExecutor = autoCompleteExecutor;
     }
 
     @Override
@@ -71,6 +82,51 @@ public class SlashCommandListener extends ListenerAdapter {
             log.warn("Command /{} rejected — the command pool is saturated", command.name());
             reply(event, inPublic, "The bot is busy right now — give it a moment and try that again.");
         }
+    }
+
+    /**
+     * Suggestions for an autocompleting option, from the command that will run it.
+     *
+     * <p>Off the gateway thread for the reason {@link #onSlashCommandInteraction} is, and
+     * on a pool of its own because this one has three seconds and no way to ask for more.
+     *
+     * <p>Every failure ends the same way — an empty list. There is no error channel here:
+     * an autocomplete has no message to reply into, so the worst outcome that can be
+     * reported is no suggestions, and the caller can still type the value by hand.
+     */
+    @Override
+    public void onCommandAutoCompleteInteraction(CommandAutoCompleteInteractionEvent event) {
+        SlashCommand command = registry.find(event.getName()).orElse(null);
+        if (command == null || event.getGuild() == null) {
+            event.replyChoices(List.of()).queue();
+            return;
+        }
+        try {
+            autoCompleteExecutor.execute(() -> suggest(command, event));
+        } catch (RejectedExecutionException e) {
+            log.warn("Autocomplete for /{} rejected — the suggestion pool is saturated", command.name());
+            event.replyChoices(List.of()).queue();
+        }
+    }
+
+    private void suggest(SlashCommand command, CommandAutoCompleteInteractionEvent event) {
+        List<Command.Choice> choices;
+        try {
+            choices = command.autocomplete(event);
+        } catch (Exception e) {
+            log.warn("Autocomplete for /{} failed in guild {}", command.name(), event.getGuild().getId(), e);
+            choices = List.of();
+        }
+        if (choices.size() > OptionData.MAX_CHOICES) {
+            // replyChoices would throw, and an exception on this thread leaves the caller
+            // watching a box that never fills in. Cut it and say so instead.
+            log.warn("Autocomplete for /{} returned {} choices; showing the first {}",
+                    command.name(), choices.size(), OptionData.MAX_CHOICES);
+            choices = choices.subList(0, OptionData.MAX_CHOICES);
+        }
+        // The interaction may have expired while this was queued, which is not worth an
+        // error line — it means the caller has typed another character since.
+        event.replyChoices(choices).queue(null, error -> log.debug("Autocomplete reply dropped", error));
     }
 
     private void run(SlashCommand command, SlashCommandInteractionEvent event, boolean inPublic) {

@@ -53,17 +53,37 @@ public class ObjectiveService {
     /** How many candidates an "I cannot tell which one you mean" message spells out. */
     private static final int SLOTS_LISTED = 8;
 
+    /** What to do about an ambiguous name, per command: edit has a picker, remove does not. */
+    private static final String PICK_INSTEAD = "Pick it from the list rather than typing the name.";
+
+    private static final String NARROW_INSTEAD = "Add `time:` or `zone:` to say which one you mean.";
+
     /**
      * Which line {@code /objective edit} and {@code /objective remove} mean.
      *
-     * <p>The name is what the guild calls the thing out loud, and on its own it is
-     * normally enough. {@code popsAtUtc} and {@code zone} are tie-breakers, needed only
-     * when that name is up more than once; when they are absent and the name is still
-     * ambiguous nothing is picked on the caller's behalf — the command refuses and says
-     * what the candidates are. Guessing here edits the wrong objective and tells nobody,
-     * which is the one failure a shared board cannot survive.
+     * <p>Two ways in, because the two commands ask differently. {@code /objective edit}
+     * offers the live board as a picker and gets back {@link #picked(long) an id}, which
+     * names one row and cannot be ambiguous. {@code /objective remove} is
+     * {@link #typed(String, LocalTime, String) typed}: the name is what the guild calls
+     * the thing out loud and on its own it is normally enough, with {@code popsAtUtc} and
+     * {@code zone} as tie-breakers for when that name is up more than once.
+     *
+     * <p>Either way nothing is picked on the caller's behalf. A typed name that matches
+     * several lines is refused with the candidates spelled out, because guessing here
+     * edits the wrong objective and tells nobody — the one failure a shared board cannot
+     * survive.
      */
-    public record Selector(String name, LocalTime popsAtUtc, String zone) {
+    public record Selector(Long id, String name, LocalTime popsAtUtc, String zone) {
+
+        /** One row off the picker. */
+        public static Selector picked(long id) {
+            return new Selector(id, null, null, null);
+        }
+
+        /** A name somebody typed, with whatever they narrowed it by. */
+        public static Selector typed(String name, LocalTime popsAtUtc, String zone) {
+            return new Selector(null, name, popsAtUtc, zone);
+        }
     }
 
     /**
@@ -129,6 +149,24 @@ public class ObjectiveService {
     }
 
     /**
+     * The same list as {@link #list}, read without writing anything.
+     *
+     * <p>For the {@code /objective edit} picker, which fires once per keystroke. Sweeping
+     * is right when somebody is looking at the board and wrong on a keypress: each one
+     * would open a write transaction to delete, almost always, nothing. Expired rows are
+     * filtered out here by the same rule the sweep deletes them under, so the picker and
+     * the board never disagree about what is up — the rows just outlive the typing and go
+     * on the next real read.
+     */
+    @Transactional(readOnly = true)
+    public List<Objective> visible(long discordGuildId, Instant now) {
+        Instant cutoff = now.minus(GRACE);
+        return objectives.findByDiscordGuildIdOrderByPopsAtAsc(discordGuildId).stream()
+                .filter(objective -> objective.getPopsAt().isAfter(cutoff))
+                .toList();
+    }
+
+    /**
      * Changes one line: its name, its time, its zone, or any combination of the three.
      *
      * <p>A new time is resolved against {@code now} the way {@link #add} resolves one, so
@@ -146,7 +184,7 @@ public class ObjectiveService {
                     "Say what to change: `new_name:`, `new_time:` or `new_zone:` — "
                             + "any one of them, or all three.");
         }
-        Objective objective = select(discordGuildId, selector, now);
+        Objective objective = select(discordGuildId, selector, now, PICK_INSTEAD);
 
         String previousName = objective.getName();
         String previousZone = objective.getZone();
@@ -186,7 +224,7 @@ public class ObjectiveService {
      */
     @Transactional
     public Objective remove(long discordGuildId, Selector selector, Instant now) {
-        Objective objective = select(discordGuildId, selector, now);
+        Objective objective = select(discordGuildId, selector, now, NARROW_INSTEAD);
         objectives.delete(objective);
         return objective;
     }
@@ -211,14 +249,31 @@ public class ObjectiveService {
      *
      * <p>Matched in Java over {@link #list} rather than by a query of its own, so that the
      * sweep has already run: an expired row is not on the board, and neither editing nor
-     * removing one should appear to work.
+     * removing one should appear to work. Reading the swept list is also what scopes an
+     * id to the server that sent it — a row id from another guild's board matches nothing.
+     *
+     * @param tieBreaker how to say which line is meant, appended when a typed name matches
+     *     several. The two commands answer that differently: edit has a picker to use
+     *     instead, remove has {@code time:} and {@code zone:}.
      */
-    private Objective select(long discordGuildId, Selector selector, Instant now) {
+    private Objective select(long discordGuildId, Selector selector, Instant now, String tieBreaker) {
+        List<Objective> live = list(discordGuildId, now);
+
+        if (selector.id() != null) {
+            return live.stream()
+                    .filter(objective -> selector.id().equals(objective.getId()))
+                    .findFirst()
+                    .orElseThrow(() -> new CommandException(
+                            "That one is not on the list any more — it dropped off, or somebody "
+                                    + "else moved it, between the list opening and you picking. "
+                                    + "`/objective show` has what is up."));
+        }
+
         String name = requireName(selector.name());
         LocalTime popsAtUtc = selector.popsAtUtc();
         String zone = blankToNull(selector.zone());
 
-        List<Objective> byName = list(discordGuildId, now).stream()
+        List<Objective> byName = live.stream()
                 .filter(objective -> objective.getName().equalsIgnoreCase(name))
                 .toList();
         if (byName.isEmpty()) {
@@ -240,9 +295,8 @@ public class ObjectiveService {
                     .formatted(Formatting.escapeMarkdown(name), narrowing(popsAtUtc, zone), slots(byName, now)));
         }
         if (matches.size() > 1) {
-            throw new CommandException(("**%s** is on the list %d times — %s. Add `time:` or `zone:` "
-                            + "to say which one you mean.")
-                    .formatted(Formatting.escapeMarkdown(name), matches.size(), slots(matches, now)));
+            throw new CommandException("**%s** is on the list %d times — %s. %s"
+                    .formatted(Formatting.escapeMarkdown(name), matches.size(), slots(matches, now), tieBreaker));
         }
         return matches.get(0);
     }

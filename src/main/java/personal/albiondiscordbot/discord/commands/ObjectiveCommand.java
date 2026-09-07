@@ -5,12 +5,15 @@ import java.time.Instant;
 import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.BiConsumer;
 import net.dv8tion.jda.api.EmbedBuilder;
+import net.dv8tion.jda.api.events.interaction.command.CommandAutoCompleteInteractionEvent;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
 import net.dv8tion.jda.api.interactions.InteractionContextType;
+import net.dv8tion.jda.api.interactions.commands.Command;
 import net.dv8tion.jda.api.interactions.commands.OptionMapping;
 import net.dv8tion.jda.api.interactions.commands.OptionType;
 import net.dv8tion.jda.api.interactions.commands.build.Commands;
@@ -41,9 +44,10 @@ import personal.albiondiscordbot.util.UtcTimeParser;
  * rarely whoever typed it. Both of those go to the audit log, which is where the record of
  * who moved what lives once the message has scrolled away.
  *
- * <p>{@code edit} and {@code remove} name a line the way the guild does, by what it is
- * called. {@code time:} and {@code zone:} are there to break a tie and are needed only
- * when that name is up more than once; nothing is ever picked on the caller's behalf.
+ * <p>{@code edit} picks from the live board — the option autocompletes against what is
+ * actually up, so there is no name to spell and no tie to break. {@code remove} names a
+ * line the way the guild does, by what it is called, with {@code time:} and {@code zone:}
+ * for when that name is up more than once. Neither one ever picks on the caller's behalf.
  */
 @Component
 public class ObjectiveCommand implements SlashCommand {
@@ -58,6 +62,15 @@ public class ObjectiveCommand implements SlashCommand {
      * to lose one would be to remove the objective and add it again.
      */
     private static final String CLEAR_ZONE = "-";
+
+    /**
+     * Marks a value as one the picker produced rather than one somebody typed.
+     *
+     * <p>Never seen — Discord shows the choice's label and sends its value — and it is
+     * what lets a row id and a hand-typed name share one option without either being
+     * mistaken for the other.
+     */
+    private static final String PICKED = "id:";
 
     private final ObjectiveService objectives;
     private final AuditLogService auditLog;
@@ -106,8 +119,17 @@ public class ObjectiveCommand implements SlashCommand {
                         OptionType.STRING, "zone", "Where it is, e.g. Fort Sterling — optional", false)
                 .setMaxLength(60);
 
-        // The selector. Optional and rarely typed: a name is enough until the same name is
-        // on the board twice, which is exactly when these say which of them is meant.
+        // /objective edit picks from the live board. Autocomplete rather than choices:
+        // choices are fixed when the command is registered and the board turns over
+        // hourly, so the list has to be built per keystroke against what is up now.
+        OptionData pick = new OptionData(
+                        OptionType.STRING, "objective", "Which one — pick it from the list", true)
+                .setAutoComplete(true)
+                .setMaxLength(100);
+
+        // /objective remove has no picker, so it names the line the old way. Optional and
+        // rarely typed: a name is enough until the same name is on the board twice, which
+        // is exactly when these say which of them is meant.
         OptionData whichName = new OptionData(
                         OptionType.STRING, "name", "Which objective — the name as it is on the list", true)
                 .setMaxLength(100);
@@ -133,7 +155,7 @@ public class ObjectiveCommand implements SlashCommand {
                         new SubcommandData("show", "List the objectives, soonest first"),
                         new SubcommandData("edit", "Fix an objective that is on the list")
                                 .addOptions(
-                                        whichName,
+                                        pick,
                                         new OptionData(OptionType.STRING, "new_name", "Rename it", false)
                                                 .setMaxLength(100),
                                         new OptionData(
@@ -146,11 +168,41 @@ public class ObjectiveCommand implements SlashCommand {
                                                         "new_zone",
                                                         "Set the zone, or " + CLEAR_ZONE + " to take it off",
                                                         false)
-                                                .setMaxLength(60),
-                                        whichTime,
-                                        whichZone),
+                                                .setMaxLength(60)),
                         new SubcommandData("remove", "Take an objective off the list")
                                 .addOptions(whichName, whichTime, whichZone));
+    }
+
+    /**
+     * The live board, as the {@code /objective edit} picker.
+     *
+     * <p>Filtered here rather than by Discord, which only narrows a static choice list and
+     * has none to narrow. Matching runs over the whole label, so "martlock" finds the
+     * chest there and "20:" finds everything at eight.
+     *
+     * <p>Reads through {@link ObjectiveService#visible} rather than the sweeping list: this
+     * fires on every keystroke, and the sweep is a write.
+     */
+    @Override
+    public List<Command.Choice> autocomplete(CommandAutoCompleteInteractionEvent event) {
+        if (!"objective".equals(event.getFocusedOption().getName())) {
+            return List.of();
+        }
+        Instant now = Instant.now();
+        String typed = event.getFocusedOption().getValue().trim().toLowerCase(Locale.ROOT);
+
+        List<Command.Choice> choices = new ArrayList<>();
+        for (Objective objective : objectives.visible(event.getGuild().getIdLong(), now)) {
+            String label = label(objective, now);
+            if (!typed.isEmpty() && !label.toLowerCase(Locale.ROOT).contains(typed)) {
+                continue;
+            }
+            choices.add(new Command.Choice(label, PICKED + objective.getId()));
+            if (choices.size() == OptionData.MAX_CHOICES) {
+                break;
+            }
+        }
+        return choices;
     }
 
     @Override
@@ -237,7 +289,7 @@ public class ObjectiveCommand implements SlashCommand {
                 optionalTime(event, "new_time"),
                 newZone(event));
 
-        ObjectiveService.Edited edited = objectives.edit(context.guildId(), selector(event), change, now);
+        ObjectiveService.Edited edited = objectives.edit(context.guildId(), picked(event), change, now);
         Objective objective = edited.objective();
 
         // One line per thing that moved, old on the left. People reading this already saw
@@ -318,8 +370,63 @@ public class ObjectiveCommand implements SlashCommand {
         return embed;
     }
 
+    /**
+     * One line as the picker lists it — the board's own vocabulary, so what you choose
+     * reads like the line you were looking at.
+     *
+     * <p>A choice name caps at 100 characters and a name and a zone can spend 160 between
+     * them. The time is the part that has to survive, since it is what tells two lines of
+     * the same name apart, so the name gives way first.
+     */
+    static String label(Objective objective, Instant now) {
+        boolean popped = ObjectiveService.hasPopped(objective, now);
+        String head = popped ? "🔴 " : "🕒 ";
+
+        StringBuilder tail = new StringBuilder();
+        if (objective.getZone() != null) {
+            tail.append(" · ").append(objective.getZone());
+        }
+        tail.append(" · ").append(objective.popsAtUtc()).append(" UTC");
+        if (popped) {
+            tail.append(" · popped");
+        }
+
+        String name = objective.getName();
+        int room = Command.Choice.MAX_NAME_LENGTH - head.length() - tail.length();
+        if (name.length() > room) {
+            name = name.substring(0, Math.max(1, room - 1)) + "…";
+        }
+        String label = head + name + tail;
+        // Belt and braces: Command.Choice throws on an over-long name, and an exception
+        // inside an autocomplete leaves the caller watching a box that never fills in.
+        return label.length() <= Command.Choice.MAX_NAME_LENGTH
+                ? label
+                : label.substring(0, Command.Choice.MAX_NAME_LENGTH);
+    }
+
+    /**
+     * Which objective an {@code edit} means.
+     *
+     * <p>The picker sends back a marked row id, which names one line and cannot be
+     * ambiguous. Anything else is what somebody typed instead of picking — Discord lets an
+     * autocompleting option be submitted with whatever was in the box — and falls back to
+     * matching on the name, the way {@code /objective remove} works. The marker is what
+     * keeps those apart, so an objective somebody called "42" is still found by its name.
+     */
+    private static ObjectiveService.Selector picked(SlashCommandInteractionEvent event) {
+        String value = event.getOption("objective", OptionMapping::getAsString).trim();
+        if (value.startsWith(PICKED)) {
+            try {
+                return ObjectiveService.Selector.picked(Long.parseLong(value.substring(PICKED.length())));
+            } catch (NumberFormatException e) {
+                // Typed, and it happened to start with the marker. Treat it as a name.
+            }
+        }
+        return ObjectiveService.Selector.typed(value, null, null);
+    }
+
     private static ObjectiveService.Selector selector(SlashCommandInteractionEvent event) {
-        return new ObjectiveService.Selector(
+        return ObjectiveService.Selector.typed(
                 event.getOption("name", OptionMapping::getAsString),
                 optionalTime(event, "time"),
                 event.getOption("zone", OptionMapping::getAsString));

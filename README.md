@@ -95,7 +95,7 @@ Then members can `/register <their character name>`.
 | `/disarray <level>` | Everyone | How many players a Disarray level means, e.g. `45` → `154-159` |
 | `/objective add <name> <HH:MM> [zone]` | Everyone | Put something on the board at a UTC time |
 | `/objective show` | Everyone | The board, soonest first. Objectives drop off 30 minutes after they pop |
-| `/objective edit <name> [new_name] [new_time] [new_zone]` | Everyone | Fix a line that is wrong |
+| `/objective edit` + drop-down `[new_name] [new_time] [new_zone]` | Everyone | Pick a line off the board and fix it |
 | `/objective remove <name>` | Everyone | Take a line off the board |
 | `/register <name>` | Everyone | Claim a character; verified against the live API |
 | `/unregister [@user]` | Self / staff | Remove a registration |
@@ -151,19 +151,26 @@ people calling the same thing cannot put it up twice.
 
 ### Fixing the board
 
-`/objective edit name:Chest new_time:21:00` moves a line; `new_name:` renames it,
-`new_zone:` sets the zone and `new_zone:-` takes the zone back off. `/objective remove
-name:Chest` clears the line entirely. Both name a line the way the guild does — by what it
-is called, casing ignored — and both are open to everyone, exactly as `/objective add` is.
-A line that is wrong is worse than no line, and whoever spots it is hardly ever whoever
-typed it, so waiting for its author or for an officer gives up what the board is for. Both
-go to the log channel, which is where the record of who moved what lives afterwards.
+`/objective edit` opens a **drop-down of everything currently on the board** — the same
+lines `/objective show` prints, in the same order, marked 🔴 if they have already popped.
+Pick one, then say what to change: `new_time:` moves it, `new_name:` renames it,
+`new_zone:` sets the zone and `new_zone:-` takes the zone back off. Nothing to spell, and
+nothing to disambiguate. The list is built per keystroke against what is up at that
+moment, which is why it is a drop-down and not a fixed set of choices — the board turns
+over hourly and a choice list is frozen when the command is registered.
 
-When a name is up more than once, nothing is picked for you: the command refuses and
-prints the candidates, and `time:` or `zone:` says which one is meant. A new time is
-resolved like an added one, so correcting an objective to a time that has already gone by
-moves it to tomorrow rather than into the past, where the next sweep would delete it and
-take the correction with it.
+`/objective remove name:Chest` clears a line, and names it the way the guild does — by
+what it is called, casing ignored. When that name is up more than once nothing is picked
+for you: it refuses, prints the candidates, and `time:` or `zone:` says which one is meant.
+
+Both are open to everyone, exactly as `/objective add` is. A line that is wrong is worse
+than no line, and whoever spots it is hardly ever whoever typed it, so waiting for its
+author or for an officer gives up what the board is for. Both go to the log channel, which
+is where the record of who moved what lives afterwards.
+
+A new time is resolved like an added one, so correcting an objective to a time that has
+already gone by moves it to tomorrow rather than into the past, where the next sweep would
+delete it and take the correction with it.
 
 ### Who sees what
 
